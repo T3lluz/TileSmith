@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.1] - 2026-10-11
+
+- Projection gallery tile stays one full-width row. The laptop icon on "PC only" made that tile grow on PCs with an external display, which failed the 0.2.0 release tests.
+
 ## [0.2.0] - 2026-10-11
 
 - **Pick any AI and model**: Claude Code, Cursor, Hermes Agent, the Anthropic, OpenAI, Gemini, OpenRouter, Groq, Mistral, xAI and DeepSeek APIs, Ollama, LM Studio, any OpenAI-compatible endpoint or a server command — with live model lists, a model picker right in the panel's header, recent picks and effort control for Claude.

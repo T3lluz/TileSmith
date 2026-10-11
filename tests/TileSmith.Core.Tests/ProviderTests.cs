@@ -304,4 +304,16 @@ public class TileFitTests
             Assert.DoesNotContain(result.Warnings, x => x.Contains("cut off") || x.Contains("too small") || x.Contains("Unknown icon") || x.Contains("don't fit"));
         }
     }
+
+    [Fact]
+    public void Projection_bar_fits_on_one_row()
+    {
+        // An icon on one segment made this wider than a 4x1 bar, so the gallery grew it on
+        // external-display PCs (including the release runner) and the fit test failed.
+        var w = Parse("""{"title":"Projection","icon":"cast","size":"4x1","controls":[{"type":"choice","options":[{"label":"PC only","action":{"type":"display.project","mode":"pcScreenOnly"}},{"label":"Mirror","action":{"type":"display.project","mode":"duplicate"}},{"label":"Extend","action":{"type":"display.project","mode":"extend"}},{"label":"Second","action":{"type":"display.project","mode":"secondScreenOnly"}}]}]}""");
+        var result = WidgetValidator.Validate(w);
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
+        Assert.Empty(result.Warnings);
+        Assert.Equal("4x1", result.Widget.Size);
+    }
 }

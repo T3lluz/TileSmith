@@ -99,7 +99,7 @@ public static class WidgetTemplates
                 if (displays.Count > 1 || !main.IsInternal)
                 {
                     Add("project", "Display", "Projection", "PC only, mirror or extend (like Win+P)", """
-                        {"title":"Projection","icon":"cast","size":"4x1","controls":[{"type":"choice","options":[{"label":"PC only","icon":"laptop","action":{"type":"display.project","mode":"pcScreenOnly"}},{"label":"Mirror","action":{"type":"display.project","mode":"duplicate"}},{"label":"Extend","action":{"type":"display.project","mode":"extend"}},{"label":"Second","action":{"type":"display.project","mode":"secondScreenOnly"}}]}]}
+                        {"title":"Projection","icon":"cast","size":"4x1","controls":[{"type":"choice","options":[{"label":"PC only","action":{"type":"display.project","mode":"pcScreenOnly"}},{"label":"Mirror","action":{"type":"display.project","mode":"duplicate"}},{"label":"Extend","action":{"type":"display.project","mode":"extend"}},{"label":"Second","action":{"type":"display.project","mode":"secondScreenOnly"}}]}]}
                         """);
                 }
             }
