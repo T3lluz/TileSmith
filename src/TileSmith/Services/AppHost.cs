@@ -155,17 +155,11 @@ public sealed class AppHost : IActionHost
 
     public IAiBackend CreateBackend() => AiEngineFactory.Create(Settings, Server.GetConnection);
 
+    /// <summary>"Claude Opus", "Hermes", "gpt-5.2"… — the AI in use, for messages.</summary>
     public string EngineDisplayName()
     {
-        var engine = AiEngineFactory.ResolveEngine(Settings);
-        return engine switch
-        {
-            "claude" => "Claude",
-            "cursor" => "Cursor",
-            "openai" => Settings.Ai.OpenAiModel ?? "your model",
-            "hermes" => "Hermes",
-            _ => "AI",
-        };
+        var provider = AiEngineFactory.ResolveProvider(Settings);
+        return ProviderCatalog.ModelLabel(provider, Settings.Ai.ModelFor(provider.Id));
     }
 
     // ── Widget operations (used by the panel and by the agent) ─────────────────────────

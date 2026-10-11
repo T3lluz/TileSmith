@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0] - 2026-10-11
+
+- **Pick any AI and model**: Claude Code, Cursor, Hermes Agent, the Anthropic, OpenAI, Gemini, OpenRouter, Groq, Mistral, xAI and DeepSeek APIs, Ollama, LM Studio, any OpenAI-compatible endpoint or a server command — with live model lists, a model picker right in the panel's header, recent picks and effort control for Claude.
+- **Automatic fallback**: when the chosen AI can't be reached (offline, signed out, rate limited) the next ready one takes over and the panel says so.
+- **Hermes on your server is found again**: scripts sent over SSH no longer break on Windows line endings, Hermes in Docker is detected with its model list, and an unchecked server is checked in the background.
+- **Everything fits**: tiles are drawn from shared measurements that the AI is told about and the validator enforces; tiles grow instead of clipping, long text ends in "…" with a tooltip, and the panel no longer cuts off its right edge.
+- **Hold to move**: press and hold a tile to lift it, drag it (the others spring aside, a placeholder shows where it lands, the board scrolls at the edges). Holding without moving opens the tile's menu — size, duplicate, edit JSON, remove.
+- **Widget gallery**: 30 ready-made widgets (resolution, refresh rate, power mode, media, CPU, memory, server status…) added with one tap.
+- **New Settings**: TileSmith's own design with an AI page (providers, keys, models, test), a Server page with Tailscale devices, live theme switching, accent swatches and Reduce motion. The Updates page no longer crashes.
+- Buttons register reliably (edge clicks and slow clicks), springier motion throughout, prompt history (↑), shortcuts (Ctrl+K/G/E/M/,) and deep links (`--settings ai`, `--gallery`, `--prompt "…"`).
+
 ## [0.1.1] - 2026-10-11
 
 - **Hermes in Docker**: TileSmith now finds Hermes Agent running in the official `nousresearch/hermes-agent` container and talks to it with `docker exec` — no setup needed.

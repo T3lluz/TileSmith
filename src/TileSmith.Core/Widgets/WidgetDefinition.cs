@@ -42,32 +42,18 @@ public static class WidgetSize
     public static CellSize Parse(string? text, WidgetDefinition widget) =>
         TryParse(text, out var size) ? size : Default(widget);
 
-    /// <summary>The smallest footprint the widget's controls fit in.</summary>
-    public static CellSize Minimum(WidgetDefinition widget)
-    {
-        var controls = widget.Controls;
-        if (controls.Count == 1)
-        {
-            var c = controls[0];
-            return c.Type switch
-            {
-                ControlType.Slider => new(2, 1),
-                ControlType.Choice => (c.Options?.Count ?? 0) switch
-                {
-                    <= 2 => new(2, 1),
-                    <= 4 => new(4, 1),
-                    _ => new(2, 2),
-                },
-                _ => new(1, 1),
-            };
-        }
-        var rows = controls.Count >= 4 ? 3 : 2;
-        var wide = controls.Any(c => c.Type == ControlType.Choice && (c.Options?.Count ?? 0) > 2);
-        return new(wide ? 4 : 2, rows);
-    }
+    /// <summary>The smallest footprint the widget's content fits in (see <see cref="TileLayout"/>).</summary>
+    public static CellSize Minimum(WidgetDefinition widget) => TileLayout.Minimum(widget);
 
     /// <summary>What a widget gets when nobody picked a size.</summary>
     public static CellSize Default(WidgetDefinition widget)
+    {
+        var preferred = Preferred(widget);
+        var minimum = Minimum(widget);
+        return new(Math.Max(preferred.W, minimum.W), Math.Max(preferred.H, minimum.H));
+    }
+
+    private static CellSize Preferred(WidgetDefinition widget)
     {
         var controls = widget.Controls;
         if (controls.Count == 1)

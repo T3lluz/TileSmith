@@ -21,8 +21,10 @@ dot turns green, and one click installs it.
 ## Use it
 
 - **Tap** tiles to toggle, **drag** sliders, pick options in segmented bars.
-- **Long-press** any tile to rearrange — drag it where you want it. The **corner handle** resizes
-  (1×1, 2×1, 2×2, 4×1, 4×2). **✦** changes a tile with AI, **✕** removes it. Right-click for JSON editing.
+- **Press and hold** a tile to lift it, then drag it where you want it; hold without moving for its menu
+  (size, duplicate, edit JSON, remove). In edit mode (pencil) the **corner handle** resizes and **✦** changes a tile with AI.
+- **+ Add widget** opens a gallery of ready-made tiles; the chip in the header picks the AI and model.
+- Shortcuts: Ctrl+K ask the AI · Ctrl+G gallery · Ctrl+E edit · Ctrl+M model · Ctrl+, settings · ↑ previous prompts.
 - **Ask for anything** in the bar at the bottom. Try:
   - *“Build a widget where I can switch my laptop display between 2560×1440 and 1920×1200”*
   - *“A toggle for my VPN”* · *“Restart my Plex container on the server”* · *“Media controls”*
@@ -34,7 +36,7 @@ live; **Stop** and **Undo** are always there. Prefer to approve each command? Se
 
 ## Connect your AI
 
-Open **Settings › AI & server** and pick one:
+Open **Settings › AI** and pick a provider — each shows whether it's ready, and its live model list:
 
 | Engine | How it connects |
 |---|---|
@@ -43,6 +45,10 @@ Open **Settings › AI & server** and pick one:
 | **Custom command** | Any CLI on your server that reads a prompt (`claude -p`, `ollama run …`, `llm`) |
 | **Claude** (your subscription) | The official Claude Code CLI on this PC — sign in with `claude auth login` |
 | **Cursor** (your subscription) | The official Cursor Agent CLI on this PC — sign in with `cursor-agent login` |
+| **Anthropic, OpenAI, Gemini, OpenRouter, Groq, Mistral, xAI, DeepSeek** | Your API key, stored encrypted with DPAPI |
+| **Ollama, LM Studio** | Models running on this PC |
+
+If the chosen AI can't be reached, TileSmith falls back to the next ready one (Settings › AI › Behaviour).
 
 For a server: type `you@hostname` (or pick it from your **Tailscale** tailnet), enter the password and press
 **Connect**, then **Detect** to find the AI tools there. *Sign in with a key instead* swaps the password for a

@@ -65,14 +65,7 @@ public static class WidgetValidator
             ValidateControl(w.Controls[i], $"controls[{i}]", errors, warnings);
         }
 
-        if (errors.Count == 0)
-        {
-            var requested = WidgetSize.TryParse(w.Size, out var parsed) ? parsed : WidgetSize.Default(w);
-            var minimum = WidgetSize.Minimum(w);
-            var size = new CellSize(Math.Max(requested.W, minimum.W), Math.Max(requested.H, minimum.H));
-            if (size != requested) warnings.Add($"Size {requested} is too small for these controls — using {size}.");
-            w.Size = size.ToString();
-        }
+        if (errors.Count == 0) FitSize(w, errors, warnings);
         foreach (var c in w.Controls)
         {
             if (c.Icon is not null) c.Icon = Icons.Normalize(c.Icon) ?? c.Icon;
@@ -84,6 +77,46 @@ public static class WidgetValidator
         }
 
         return new ValidationResult(w, errors, warnings);
+    }
+
+    /// <summary>
+    /// Makes sure the content fits the tile: grows the size when the controls need more room, and points out labels
+    /// and options that would be cut off, so the AI can shorten them.
+    /// </summary>
+    private static void FitSize(WidgetDefinition w, List<string> errors, List<string> warnings)
+    {
+        var requested = WidgetSize.TryParse(w.Size, out var parsed) ? parsed : WidgetSize.Default(w);
+        var minimum = TileLayout.Minimum(w);
+        if (minimum.H > WidgetSize.MaxHeight)
+        {
+            errors.Add($"These controls need about {TileLayout.CardHeight(w):0} px of height, but a tile is at most {WidgetSize.MaxHeight} rows " +
+                       $"({TileLayout.Height(WidgetSize.MaxHeight):0} px). Split it into two widgets or remove a control.");
+            return;
+        }
+        var size = new CellSize(Math.Max(requested.W, minimum.W), Math.Max(requested.H, minimum.H));
+        if (size != requested && WidgetSize.TryParse(w.Size, out _))
+            warnings.Add($"Size {requested} was too small for this content (it needs at least {minimum}) — saved as {size}.");
+        w.Size = size.ToString();
+
+        var single = TileLayout.IsSingle(w, size);
+        var limit = TileLayout.LabelLimit(size, single);
+        var titleLimit = single ? limit : (int)((TileLayout.Width(size.W) - 2 * TileLayout.CardPaddingX - 30) / TileLayout.CharWidth);
+        if (w.Title.Length > titleLimit && !(single && w.Controls[0].Label is { Length: > 0 }))
+            warnings.Add($"Title “{w.Title}” is longer than fits at {size} (about {titleLimit} characters) and will be cut off.");
+        foreach (var c in w.Controls)
+        {
+            if (c.Type != ControlType.Choice && c.Label is { } label && label.Length > limit)
+                warnings.Add($"Label “{label}” is longer than fits at {size} (about {limit} characters) and will be cut off.");
+            if (c.Type != ControlType.Choice || c.Options is not { Count: > 0 } options) continue;
+            var available = single
+                ? size.W >= 3 ? TileLayout.Width(size.W) - 2 * TileLayout.CardPaddingX - 150 : TileLayout.Width(size.W) - 2 * TileLayout.CardPaddingX
+                : TileLayout.Width(size.W) - 2 * TileLayout.CardPaddingX;
+            if (TileLayout.ChoiceWidth(c) > available)
+            {
+                var perOption = Math.Max(2, (int)((available - 6) / options.Count - 20 - (options.Any(o => !string.IsNullOrWhiteSpace(o.Icon)) ? 22 : 0)) / (int)TileLayout.CharWidth);
+                warnings.Add($"The options of “{c.Label ?? w.Title}” don't fit side by side at {size}: keep each label to about {perOption} characters, or use fewer options.");
+            }
+        }
     }
 
     private static void ValidateControl(ControlDefinition c, string path, List<string> errors, List<string> warnings)
@@ -98,7 +131,8 @@ public static class WidgetValidator
         switch (type)
         {
             case ControlType.Button:
-                RequireLabel(c, path, errors);
+                // icon-only buttons are fine (media controls)
+                if (string.IsNullOrWhiteSpace(c.Icon)) RequireLabel(c, path, errors);
                 ValidateAction(c.Action, $"{path}.action", errors, warnings, required: true, query: false);
                 break;
 

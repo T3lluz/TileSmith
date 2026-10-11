@@ -14,6 +14,23 @@ public static class Program
     public static bool JustUpdated { get; private set; }
     public static string[] Arguments { get; private set; } = [];
 
+    /// <summary>
+    /// Deep links for shortcuts and scripts: <c>--settings [page]</c>, <c>--gallery</c>, <c>--prompt "text"</c>, <c>--show</c>.
+    /// </summary>
+    public static string? CommandFromArguments(string[] args)
+    {
+        string? After(string flag)
+        {
+            var i = Array.IndexOf(args, flag);
+            return i >= 0 && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal) ? args[i + 1] : null;
+        }
+        if (args.Contains("--settings")) return "settings:" + (After("--settings") ?? "");
+        if (args.Contains("--gallery")) return "gallery";
+        if (After("--prompt") is { } prompt) return "prompt:" + prompt;
+        if (args.Contains("--show")) return "show";
+        return null;
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -35,7 +52,7 @@ public static class Program
 
         if (!SingleInstance.TryAcquire(waitForPrevious: args.Contains("--restarted") || args.Contains("--updated")))
         {
-            SingleInstance.SignalExisting(args.Contains("--settings") ? "settings" : "show");
+            SingleInstance.SignalExisting(CommandFromArguments(args) ?? "show");
             return 0;
         }
 
@@ -61,7 +78,8 @@ public static class Program
 /// <summary>One TileSmith per user. A second launch asks the running one to open its panel.</summary>
 internal static class SingleInstance
 {
-    private static readonly string Name = $"TileSmith-{Environment.UserName}";
+    private static readonly string Name = $"TileSmith-{Environment.UserName}" +
+        (AppPaths.IsCustomDataDir ? "-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(AppPaths.DataDir.ToLowerInvariant())))[..8] : "");
     private static Mutex? _mutex;
 
     public static bool TryAcquire(bool waitForPrevious)

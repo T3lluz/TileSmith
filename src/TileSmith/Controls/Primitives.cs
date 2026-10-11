@@ -49,14 +49,37 @@ public static class Ui
         MaxLines = maxLines,
         IsHitTestVisible = false,
     };
+
+    /// <summary>Shows the full text as a tooltip whenever it's cut off.</summary>
+    public static TextBlock TipWhenTrimmed(TextBlock block)
+    {
+        block.IsTextTrimmedChanged += (s, _) => ToolTipService.SetToolTip(s, s.IsTextTrimmed ? s.Text : null);
+        return block;
+    }
+
+    /// <summary>"2560x1440" → "2560 × 1440" (state values read better the way Windows writes them).</summary>
+    public static string FriendlyValue(string value)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(value.Trim(), @"^(\d{3,5})\s*[xX×]\s*(\d{3,5})$");
+        return m.Success ? $"{m.Groups[1].Value} × {m.Groups[2].Value}" : value;
+    }
+
+    public static Border Divider() => new()
+    {
+        Height = 1,
+        Background = Palette.Current.Brush(Palette.Current.Hairline),
+        IsHitTestVisible = false,
+    };
 }
 
 /// <summary>
-/// A tappable surface: hover tint, press-shrink (0.97), a Material ripple from the touch point, keyboard
-/// activation and an automation name. Base for tiles, chips and buttons.
+/// A tappable surface: hover tint, press-shrink (0.97), a Material ripple from the touch point, keyboard activation,
+/// colour crossfades and an automation name. Base for tiles, chips and buttons. The pointer is captured on press so
+/// a click still counts when the press-shrink pulls the edge away from the cursor.
 /// </summary>
 public class Pressable : Grid
 {
+    private const double Tolerance = 8;
     private readonly Border _hover;
     private readonly Canvas _rippleLayer;
     private bool _pressed;
@@ -74,13 +97,18 @@ public class Pressable : Grid
         Motion.EnableTransitions(this);
         Motion.CenterScale(this);
         _hover.OpacityTransition = new ScalarTransition { Duration = Motion.Fast };
+        BackgroundTransition = new BrushTransition { Duration = TimeSpan.FromMilliseconds(180) };
 
         PointerEntered += (_, _) => _hover.Opacity = IsEnabledForInput ? 1 : 0;
-        PointerExited += (_, _) => { _hover.Opacity = 0; Release(); };
+        PointerExited += (_, _) =>
+        {
+            _hover.Opacity = 0;
+            if (!_pressed) Release();
+        };
         PointerPressed += OnPressed;
         PointerReleased += OnReleased;
-        PointerCaptureLost += (_, _) => Release();
-        PointerCanceled += (_, _) => Release();
+        PointerCaptureLost += (_, e) => { if (_pressed && ReferenceEquals(e.OriginalSource, this)) Cancel(); };
+        PointerCanceled += (_, _) => Cancel();
         KeyDown += (_, e) =>
         {
             if (e.Key is VirtualKey.Enter or VirtualKey.Space && IsEnabledForInput)
@@ -154,12 +182,22 @@ public class Pressable : Grid
         Release();
     }
 
+    private void Cancel()
+    {
+        _cancelled = true;
+        Release();
+    }
+
     private void OnPressed(object sender, PointerRoutedEventArgs e)
     {
         if (!IsEnabledForInput) return;
         if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse && !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
         _pressed = true;
         _cancelled = false;
+        e.Handled = true; // a Pressable inside another must not press both (the tile board still sees it: handledEventsToo)
+        // capture keeps edge clicks working while the press-shrink pulls the edge in; touch stays uncaptured so
+        // swiping over tiles still scrolls the board
+        if (e.Pointer.PointerDeviceType != PointerDeviceType.Touch) CapturePointer(e.Pointer);
         Scale = new Vector3(0.97f, 0.97f, 1);
         Ripple(e.GetCurrentPoint(this).Position);
     }
@@ -168,9 +206,11 @@ public class Pressable : Grid
     {
         var wasPressed = _pressed && !_cancelled;
         Release();
+        ReleasePointerCapture(e.Pointer);
         if (!wasPressed || !IsEnabledForInput) return;
         var p = e.GetCurrentPoint(this).Position;
-        if (p.X >= 0 && p.Y >= 0 && p.X <= ActualWidth && p.Y <= ActualHeight) Click?.Invoke(this, EventArgs.Empty);
+        if (p.X >= -Tolerance && p.Y >= -Tolerance && p.X <= ActualWidth + Tolerance && p.Y <= ActualHeight + Tolerance)
+            Click?.Invoke(this, EventArgs.Empty);
     }
 
     private void Release()
@@ -224,11 +264,14 @@ public sealed class IconButton : Pressable
         Width = size;
         Height = size;
         CornerRadius = new CornerRadius(size / 2);
+        Fill = Colors.Transparent;
         _glyph = Glyph.Make(icon, iconSize, Palette.Current.Text2);
         SetContent(_glyph);
         ToolTipService.SetToolTip(this, tooltip);
         AccessibleName = tooltip;
     }
+
+    public TextBlock IconElement => _glyph;
 
     public void SetIcon(string icon) => _glyph.Text = Icons.Glyph(icon);
 
@@ -239,24 +282,91 @@ public sealed class IconButton : Pressable
     }
 }
 
-/// <summary>Pill chip: tonal (accent 16%) or filled. Used for suggestions, answers and small actions.</summary>
+public enum ChipStyle { Tonal, Filled, Outline, Ghost }
+
+/// <summary>Pill chip / button: tonal (accent 16%), filled, outlined or ghost.</summary>
 public sealed class Chip : Pressable
 {
-    public Chip(string text, string? icon = null, bool filled = false, double height = 32)
+    private readonly TextBlock _label;
+    private readonly TextBlock? _icon;
+
+    public Chip(string text, string? icon = null, bool filled = false, double height = 32, ChipStyle? style = null, string? trailingIcon = null)
     {
         var p = Palette.Current;
+        var kind = style ?? (filled ? ChipStyle.Filled : ChipStyle.Tonal);
         Height = height;
         CornerRadius = new CornerRadius(height / 2);
-        Fill = filled ? p.Accent : p.AccentSoft;
-        var fg = filled ? p.OnAccent : (p.IsDark ? Palette.Parse("#D3E1F0") : p.Accent);
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Padding = new Thickness(icon is null ? 14 : 10, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center };
-        if (icon is not null) row.Children.Add(Glyph.Make(icon, 16, fg));
-        var label = Ui.Text(text, 12.5, fg, semibold: true);
-        label.VerticalAlignment = VerticalAlignment.Center;
-        row.Children.Add(label);
+        Fill = kind switch
+        {
+            ChipStyle.Filled => p.Accent,
+            ChipStyle.Tonal => p.AccentSoft,
+            ChipStyle.Outline => Colors.Transparent,
+            _ => Colors.Transparent,
+        };
+        if (kind == ChipStyle.Outline)
+        {
+            BorderBrush = p.Brush(p.HairlineStrong);
+            BorderThickness = new Thickness(1);
+        }
+        var fg = kind switch
+        {
+            ChipStyle.Filled => p.OnAccent,
+            ChipStyle.Tonal => p.IsDark ? Palette.Parse("#D3E1F0") : p.Accent,
+            _ => p.Text1,
+        };
+        var hasText = !string.IsNullOrEmpty(text);
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 6,
+            Padding = new Thickness(icon is null || !hasText ? (hasText ? 14 : 8) : 10, 0, trailingIcon is null ? (hasText ? 14 : 8) : 10, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        if (icon is not null)
+        {
+            _icon = Glyph.Make(icon, height >= 36 ? 18 : 16, fg);
+            row.Children.Add(_icon);
+        }
+        _label = Ui.Text(text, height >= 36 ? 13 : 12.5, fg, semibold: true);
+        _label.VerticalAlignment = VerticalAlignment.Center;
+        if (hasText) row.Children.Add(_label);
+        if (trailingIcon is not null) row.Children.Add(Glyph.Make(trailingIcon, 16, kind == ChipStyle.Filled ? fg : p.Text3));
         SetContent(row);
-        AccessibleName = text;
+        AccessibleName = hasText ? text : icon;
     }
+
+    public string Text
+    {
+        get => _label.Text;
+        set { _label.Text = value; AccessibleName = value; }
+    }
+
+    public void SetIcon(string icon)
+    {
+        if (_icon is not null) _icon.Text = Icons.Glyph(icon);
+    }
+}
+
+/// <summary>A round monogram badge for an AI provider (no logos — a letter on the provider's colour).</summary>
+public sealed class Avatar : Grid
+{
+    public Avatar(string monogram, Color color, double size = 32)
+    {
+        Width = Height = size;
+        CornerRadius = new CornerRadius(size / 2);
+        Background = Palette.Current.Brush(Palette.WithAlpha(color, Palette.Current.IsDark ? 0.22 : 0.18));
+        BorderBrush = Palette.Current.Brush(Palette.WithAlpha(color, 0.45));
+        BorderThickness = new Thickness(1);
+        var text = Ui.Text(monogram, monogram.Length > 1 ? size * 0.34 : size * 0.44, Palette.Current.IsDark ? Lighten(color) : Palette.Darken(color, 0.7), semibold: true);
+        text.HorizontalAlignment = HorizontalAlignment.Center;
+        text.VerticalAlignment = VerticalAlignment.Center;
+        text.TextLineBounds = TextLineBounds.Tight;
+        Children.Add(text);
+        IsHitTestVisible = false;
+    }
+
+    private static Color Lighten(Color c) => Color.FromArgb(255, (byte)(c.R + (255 - c.R) * 0.35), (byte)(c.G + (255 - c.G) * 0.35), (byte)(c.B + (255 - c.B) * 0.35));
 }
 
 /// <summary>
@@ -293,14 +403,15 @@ public sealed class PillSlider : Grid
         };
         Children.Add(_fill);
 
-        _icon = Glyph.Make(icon, 22, p.OnAccent);
+        var iconSize = height >= 56 ? 22 : 18;
+        _icon = Glyph.Make(icon, iconSize, p.OnAccent);
         _icon.HorizontalAlignment = HorizontalAlignment.Left;
-        _icon.Margin = new Thickness((height - 22) / 2, 0, 0, 0);
+        _icon.Margin = new Thickness((height - iconSize) / 2, 0, 0, 0);
         Children.Add(_icon);
 
-        _right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 18, 0) };
-        _label = Ui.Text(label, 13, p.Text2);
-        _value = Ui.Text("", 13, p.Text1, semibold: true);
+        _right = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, height >= 56 ? 18 : 14, 0) };
+        _label = Ui.Text(label, height >= 56 ? 13 : 12, p.Text2);
+        _value = Ui.Text("", height >= 56 ? 13 : 12, p.Text1, semibold: true);
         _right.Children.Add(_label);
         _right.Children.Add(_value);
         Children.Add(_right);
@@ -383,6 +494,8 @@ public sealed class PillSlider : Grid
         _fill.Width = h + fraction * Math.Max(0, ActualWidth - h);
         _fill.CornerRadius = CornerRadius;
         _value.Text = ActionFormat(_format, Core.Actions.ValueText.FormatNumber(_current));
+        // the label hides when the track is too short to show both it and the value
+        _label.Visibility = ActualWidth < 200 ? Visibility.Collapsed : Visibility.Visible;
         // once the fill reaches the label, flip the text to the on-accent colour so it stays readable
         var p = Palette.Current;
         var covered = _fill.Width > ActualWidth - _right.ActualWidth - 18 - 4;
@@ -394,12 +507,13 @@ public sealed class PillSlider : Grid
         format.Contains("{value}", StringComparison.OrdinalIgnoreCase) ? Core.Actions.ActionCall.Substitute(format, value) : value;
 }
 
-/// <summary>Segmented selector whose accent pill glides between options.</summary>
+/// <summary>Segmented selector whose accent pill springs between options.</summary>
 public sealed class SegmentedPill : Grid
 {
     private readonly Border _indicator;
     private readonly List<(Grid Hit, TextBlock Label, TextBlock? Icon)> _items = [];
     private int _selected = -1;
+    private bool _placed;
 
     public SegmentedPill(IReadOnlyList<(string Label, string? Icon)> options, double height = 40)
     {
@@ -416,7 +530,6 @@ public sealed class SegmentedPill : Grid
             HorizontalAlignment = HorizontalAlignment.Left,
             Opacity = 0,
         };
-        _indicator.TranslationTransition = new Vector3Transition { Duration = Motion.Normal };
         _indicator.OpacityTransition = new ScalarTransition { Duration = Motion.Fast };
         Children.Add(_indicator);
 
@@ -425,21 +538,28 @@ public sealed class SegmentedPill : Grid
         {
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             var index = i;
-            var hit = new Grid { Background = new SolidColorBrush(Colors.Transparent), IsTabStop = true, UseSystemFocusVisuals = true };
-            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            var hit = new Grid { Background = new SolidColorBrush(Colors.Transparent), IsTabStop = true, UseSystemFocusVisuals = true, CornerRadius = new CornerRadius((height - 6) / 2) };
+            var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 6, 0) };
             TextBlock? icon = null;
             if (!string.IsNullOrWhiteSpace(options[i].Icon))
             {
                 icon = Glyph.Make(options[i].Icon, 16, p.Text2);
                 content.Children.Add(icon);
             }
-            var label = Ui.Text(options[i].Label, 12.5, p.Text2, semibold: true);
+            var label = Ui.TipWhenTrimmed(Ui.Text(options[i].Label, height >= 38 ? 12.5 : 12, p.Text2, semibold: true));
             label.VerticalAlignment = VerticalAlignment.Center;
-            content.Children.Add(label);
+            if (options[i].Label.Length > 0) content.Children.Add(label);
             hit.Children.Add(content);
             AutomationProperties.SetName(hit, options[i].Label);
-            ToolTipService.SetToolTip(hit, options[i].Label);
-            hit.PointerReleased += (_, _) => Choose(index);
+            var pressed = false;
+            hit.PointerPressed += (_, e) => { pressed = true; e.Handled = false; };
+            hit.PointerExited += (_, _) => pressed = false;
+            hit.PointerReleased += (_, _) =>
+            {
+                if (!pressed) return;
+                pressed = false;
+                Choose(index);
+            };
             hit.KeyDown += (_, e) =>
             {
                 if (e.Key is VirtualKey.Enter or VirtualKey.Space) { e.Handled = true; Choose(index); }
@@ -456,6 +576,8 @@ public sealed class SegmentedPill : Grid
 
     public bool IsEnabledForInput { get; set; } = true;
 
+    public int SelectedIndex => _selected;
+
     private void Choose(int index)
     {
         if (!IsEnabledForInput) return;
@@ -465,8 +587,9 @@ public sealed class SegmentedPill : Grid
 
     public void SetSelected(int index)
     {
+        if (index == _selected && _placed) return;
         _selected = index;
-        Layout(animate: true);
+        Layout(animate: _placed);
     }
 
     private void Layout(bool animate)
@@ -477,9 +600,10 @@ public sealed class SegmentedPill : Grid
         var w = inner / _items.Count;
         _indicator.Width = w;
         _indicator.Height = Height - Padding.Top - Padding.Bottom;
-        if (!animate) _indicator.TranslationTransition = null;
+        // jump into place on first layout, glide afterwards
+        _indicator.TranslationTransition = animate ? new Vector3Transition { Duration = Motion.Normal } : null;
         _indicator.Translation = new Vector3((float)(Math.Max(0, _selected) * w), 0, 0);
-        if (!animate) _indicator.TranslationTransition = new Vector3Transition { Duration = Motion.Normal };
+        _placed = _selected >= 0;
         _indicator.Opacity = _selected >= 0 ? 1 : 0;
         for (var i = 0; i < _items.Count; i++)
         {
@@ -495,6 +619,7 @@ public sealed class PillSwitch : Grid
 {
     private readonly Border _thumb;
     private bool _on;
+    private bool _pressed;
 
     public PillSwitch()
     {
@@ -503,6 +628,7 @@ public sealed class PillSwitch : Grid
         CornerRadius = new CornerRadius(16);
         IsTabStop = true;
         UseSystemFocusVisuals = true;
+        BackgroundTransition = new BrushTransition { Duration = TimeSpan.FromMilliseconds(160) };
         _thumb = new Border
         {
             Width = 16,
@@ -514,7 +640,15 @@ public sealed class PillSwitch : Grid
         _thumb.TranslationTransition = new Vector3Transition { Duration = Motion.Normal };
         Children.Add(_thumb);
         Render();
-        PointerReleased += (_, _) => Toggle();
+        PointerPressed += (_, e) => { _pressed = true; CapturePointer(e.Pointer); };
+        PointerReleased += (_, e) =>
+        {
+            ReleasePointerCapture(e.Pointer);
+            if (!_pressed) return;
+            _pressed = false;
+            Toggle();
+        };
+        PointerCaptureLost += (_, _) => _pressed = false;
         KeyDown += (_, e) =>
         {
             if (e.Key is VirtualKey.Enter or VirtualKey.Space) { e.Handled = true; Toggle(); }
@@ -649,6 +783,7 @@ public sealed class LiveDot : Grid
         Children.Add(_halo);
         Children.Add(_dot);
         VerticalAlignment = VerticalAlignment.Center;
+        IsHitTestVisible = false;
     }
 
     public void Set(Color color, bool live)

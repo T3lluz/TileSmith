@@ -16,9 +16,15 @@ public sealed class AiLoginRequiredException(LocalCli cli, string message) : Exc
 /// The prompt goes through stdin (no command-line length limits) and the CLI's own tools are disabled —
 /// TileSmith's agent loop provides the tools.
 /// </summary>
-public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeout) : IAiBackend
+public sealed record CliAccount(bool Installed, bool SignedIn, string Summary);
+
+public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeout, string? effort = null) : IAiBackend
 {
-    public string DisplayName => cli == LocalCli.Claude ? "Claude (your subscription)" : "Cursor (your subscription)";
+    public string DisplayName => string.IsNullOrWhiteSpace(model)
+        ? cli == LocalCli.Claude ? "Claude Code" : "Cursor"
+        : ProviderCatalog.ModelLabel(ProviderCatalog.Get(cli == LocalCli.Claude ? "claude" : "cursor"), model) + (cli == LocalCli.Claude ? "" : " · Cursor");
+
+    private string Product => cli == LocalCli.Claude ? "Claude Code" : "Cursor";
 
     public static string WorkspaceDir => Path.Combine(AppPaths.DataDir, "agent-workspace");
 
@@ -26,7 +32,7 @@ public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeou
     {
         var exe = Locate(cli) ?? throw new AiException(cli == LocalCli.Claude
             ? "Claude Code isn't installed. Install it from claude.com/code, then sign in."
-            : "Cursor Agent CLI isn't installed. Install it from cursor.com/cli, then sign in.");
+            : "Cursor Agent CLI isn't installed. Install it from cursor.com/cli, then sign in.", canFallback: true);
         Directory.CreateDirectory(WorkspaceDir);
 
         var psi = new ProcessStartInfo(exe)
@@ -62,7 +68,7 @@ public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeou
         {
             try { process.Kill(entireProcessTree: true); } catch { }
             if (ct.IsCancellationRequested) throw;
-            throw new AiException($"{DisplayName} didn't answer within {timeout.TotalSeconds:0} seconds.");
+            throw new AiException($"{Product} didn't answer within {timeout.TotalSeconds:0} seconds.", canFallback: true);
         }
 
         var output = JsonExtractor.StripAnsi(await stdout);
@@ -72,8 +78,8 @@ public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeou
         {
             var message = (errors + "\n" + output).Trim();
             if (LooksLikeAuthProblem(message))
-                throw new AiLoginRequiredException(cli, $"{DisplayName.Split(' ')[0]} needs you to sign in again. ({FirstLine(message)})");
-            throw new AiException($"{DisplayName} failed: {FirstLine(message)}");
+                throw new AiLoginRequiredException(cli, $"{Product} needs you to sign in again. ({FirstLine(message)})");
+            throw new AiException($"{Product} failed: {FirstLine(message)}", canFallback: LooksLikeLimit(message));
         }
         return output;
     }
@@ -106,7 +112,17 @@ public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeou
             yield return "--model";
             yield return model!;
         }
+        if (cli == LocalCli.Claude && !string.IsNullOrWhiteSpace(effort))
+        {
+            yield return "--effort";
+            yield return effort!;
+        }
     }
+
+    private static bool LooksLikeLimit(string text) =>
+        text.Contains("limit", StringComparison.OrdinalIgnoreCase) || text.Contains("quota", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("overloaded", StringComparison.OrdinalIgnoreCase) || text.Contains("network", StringComparison.OrdinalIgnoreCase)
+        || text.Contains("ECONN", StringComparison.Ordinal) || text.Contains("timed out", StringComparison.OrdinalIgnoreCase);
 
     private static bool LooksLikeAuthProblem(string text) =>
         text.Contains("authenticat", StringComparison.OrdinalIgnoreCase)
@@ -120,8 +136,21 @@ public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeou
     private static string FirstLine(string text) =>
         text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault(l => l.Length > 3) ?? text;
 
-    /// <summary>Finds the CLI: PATH first, then the default install locations.</summary>
+    private static readonly Dictionary<LocalCli, (string? Path, DateTime At)> Located = [];
+
+    /// <summary>Finds the CLI: PATH first, then the default install locations (remembered for a few seconds).</summary>
     public static string? Locate(LocalCli cli)
+    {
+        lock (Located)
+        {
+            if (Located.TryGetValue(cli, out var hit) && DateTime.UtcNow - hit.At < TimeSpan.FromSeconds(10)) return hit.Path;
+        }
+        var path = LocateCore(cli);
+        lock (Located) Located[cli] = (path, DateTime.UtcNow);
+        return path;
+    }
+
+    private static string? LocateCore(LocalCli cli)
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -158,7 +187,87 @@ public sealed class LocalCliBackend(LocalCli cli, string? model, TimeSpan timeou
         })?.Dispose();
     }
 
-    /// <summary>Quick sign-in check without spending tokens.</summary>
+    /// <summary>Signed in or not, in words for the settings page (no tokens spent).</summary>
+    public static async Task<CliAccount> GetAccountStatusAsync(LocalCli cli, CancellationToken ct)
+    {
+        string? output;
+        try
+        {
+            output = await GetAccountAsync(cli, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            return new CliAccount(true, false, "Couldn't check the sign-in: " + ex.Message);
+        }
+        if (output is null) return new CliAccount(false, false, "Not installed on this PC");
+        return ParseAccount(cli, output);
+    }
+
+    internal static CliAccount ParseAccount(LocalCli cli, string output)
+    {
+        if (cli == LocalCli.Claude && output.TrimStart().StartsWith('{'))
+        {
+            try
+            {
+                var json = System.Text.Json.Nodes.JsonNode.Parse(output);
+                var signedIn = json?["loggedIn"]?.GetValue<bool>() == true;
+                if (!signedIn) return new CliAccount(true, false, "Not signed in");
+                var plan = json?["subscriptionType"]?.ToString();
+                var email = json?["email"]?.ToString();
+                var planText = string.IsNullOrWhiteSpace(plan) ? null : $"Claude {char.ToUpperInvariant(plan[0])}{plan[1..]}";
+                var parts = new[] { email, planText }.Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
+                return new CliAccount(true, true, "Signed in" + (parts.Count > 0 ? " · " + string.Join(" · ", parts) : ""));
+            }
+            catch (System.Text.Json.JsonException) { }
+        }
+        var line = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? "";
+        line = line.TrimStart('✓', '✔', ' ');
+        var loggedIn = (line.Contains("logged in", StringComparison.OrdinalIgnoreCase) || line.Contains("signed in", StringComparison.OrdinalIgnoreCase))
+                       && !line.Contains("not logged in", StringComparison.OrdinalIgnoreCase) && !line.Contains("not signed in", StringComparison.OrdinalIgnoreCase);
+        return new CliAccount(true, loggedIn, loggedIn ? line.Replace("Logged in as", "Signed in as", StringComparison.OrdinalIgnoreCase) : "Not signed in");
+    }
+
+    /// <summary>The models the Cursor Agent CLI offers (<c>--list-models</c>).</summary>
+    public static async Task<IReadOnlyList<ModelInfo>> ListCursorModelsAsync(CancellationToken ct)
+    {
+        var exe = Locate(LocalCli.Cursor) ?? throw new AiException("Cursor Agent CLI isn't installed.");
+        var psi = new ProcessStartInfo(exe)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+        };
+        psi.ArgumentList.Add("--list-models");
+        psi.Environment["NO_COLOR"] = "1";
+        using var p = Process.Start(psi) ?? throw new AiException("Couldn't start the Cursor Agent CLI.");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(40));
+        var output = await p.StandardOutput.ReadToEndAsync(cts.Token);
+        await p.WaitForExitAsync(cts.Token);
+        return ParseCursorModels(output);
+    }
+
+    internal static IReadOnlyList<ModelInfo> ParseCursorModels(string output)
+    {
+        var list = new List<ModelInfo>();
+        foreach (var raw in JsonExtractor.StripAnsi(output).Split('\n'))
+        {
+            var line = new string(raw.Where(ch => ch is not ('​' or '‌' or '‍' or '﻿')).ToArray()).Trim();
+            var dash = line.IndexOf(" - ", StringComparison.Ordinal);
+            if (dash <= 0) continue;
+            var id = line[..dash].Trim();
+            if (id.Contains(' ')) continue;
+            var name = System.Text.RegularExpressions.Regex.Replace(line[(dash + 3)..].Trim(), @"\s{2,}", " ");
+            string? detail = null;
+            if (name.EndsWith("(default)", StringComparison.OrdinalIgnoreCase)) { name = name[..^9].Trim(); detail = "Default"; }
+            list.Add(new ModelInfo(id, name, detail));
+        }
+        return list;
+    }
+
+    /// <summary>Raw sign-in status output, or null when the CLI isn't installed.</summary>
     public static async Task<string?> GetAccountAsync(LocalCli cli, CancellationToken ct)
     {
         var exe = Locate(cli);

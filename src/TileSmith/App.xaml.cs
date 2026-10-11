@@ -54,6 +54,7 @@ public partial class App : Application
     {
         DispatcherShutdownMode = DispatcherShutdownMode.OnExplicitShutdown;
         Theme.DesignTokens.ApplyToApp(this, _dark, _accent); // resources are only reachable once launched
+        Theme.Motion.Reduced = Core.Settings.SettingsStore.Load().ReduceMotion;
         var dispatcher = DispatcherQueue.GetForCurrentThread();
         Host = new AppHost(dispatcher);
         Log.Info("Host ready");
@@ -104,10 +105,44 @@ public partial class App : Application
             Notifications.Show($"TileSmith updated to {AppInfo.Version}", "Thanks for keeping it fresh.");
         }
 
-        if (Program.Arguments.Contains("--settings")) OpenSettings();
-        else if (Program.Arguments.Contains("--show")) _panel.Show();
+        if (Program.CommandFromArguments(Program.Arguments) is { } command) HandleCommand(command);
+
+        // a server set up before 0.2 may never have been checked properly: look for Hermes & co. in the background
+        if (Host.Settings.Server.IsConfigured && Host.Settings.Ai.DetectedEngine is null)
+        {
+            var detect = dispatcher.CreateTimer();
+            detect.Interval = TimeSpan.FromSeconds(6);
+            detect.IsRepeating = false;
+            detect.Tick += (_, _) => _ = Host.Server.ConnectAsync();
+            detect.Start();
+        }
         if (Program.Arguments.Contains("--pin")) _panel.Pin();
+        var captureAt = Array.IndexOf(Program.Arguments, "--capture");
+        if (captureAt >= 0 && captureAt + 1 < Program.Arguments.Length) StartCapture(Program.Arguments[captureAt + 1]);
         Log.Info("Ready");
+    }
+
+    private void StartCapture(string folder)
+    {
+        var shots = new List<DevCapture.Shot>();
+        foreach (var state in PanelWindow.CaptureStates)
+        {
+            shots.Add(new($"panel-{state}", async () =>
+            {
+                _panel!.PrepareCapture(state);
+                await Task.Delay(150);
+                return _panel.CaptureRoot;
+            }));
+        }
+        foreach (var page in SettingsWindow.PageTags)
+        {
+            shots.Add(new($"settings-{page}", () =>
+            {
+                OpenSettings(page);
+                return Task.FromResult<UIElement?>(_settings?.CaptureRoot);
+            }));
+        }
+        _ = DevCapture.RunAsync(folder, shots, Quit);
     }
 
     private IReadOnlyList<TrayMenuItem> BuildTrayMenu()
@@ -124,6 +159,7 @@ public partial class App : Application
         return
         [
             new TrayMenuItem("Open TileSmith", () => _panel?.Show(), IsDefault: true),
+            new TrayMenuItem("Add a widget", () => { _panel?.Show(); _panel?.OpenGallery(); }),
             new TrayMenuItem("Settings", () => OpenSettings()),
             TrayMenuItem.Separator,
             updateItem,
@@ -134,15 +170,24 @@ public partial class App : Application
 
     private void HandleCommand(string command)
     {
-        switch (command)
+        var (verb, argument) = command.IndexOf(':') is var i and > 0 ? (command[..i], command[(i + 1)..]) : (command, "");
+        switch (verb)
         {
             case "settings":
-                OpenSettings();
+                OpenSettings(argument.Length > 0 ? argument : null);
                 break;
             case "update":
                 _panel?.Show();
                 if (Host.Updates.Stage == UpdateStage.Ready) Host.Updates.RestartToApply(PrepareForExit);
                 else _ = Host.Updates.DownloadAsync();
+                break;
+            case "gallery":
+                _panel?.Show();
+                _panel?.OpenGallery(focusSearch: true);
+                break;
+            case "prompt":
+                _panel?.Show(focusPrompt: true);
+                if (argument.Length > 0) _panel?.SetPrompt(argument);
                 break;
             default:
                 _panel?.Show();

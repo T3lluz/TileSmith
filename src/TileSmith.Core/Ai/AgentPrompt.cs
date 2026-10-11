@@ -50,9 +50,10 @@ public static class AgentPrompt
               from the widget: {"type": "shell.powershell", "script": "& \"$env:APPDATA\\TileSmith\\tools\\name.ps1\" -Arg x"}
             - Check facts on this PC instead of guessing (paths, installed apps, devices). Never break things: no destructive
               commands unless the user explicitly asked for exactly that.
-            - Choose the size yourself unless the user said one (see sizes below). Toggles ? "2x1", one-tap actions ? "1x1"
-              or "2x1", sliders ? "4x1" (or "2x1" to sit next to another), choices with up to 4 options ? "4x1",
-              several controls ? "4x2". Ask only if it genuinely matters to the user.
+            - Choose the size yourself unless the user said one, using the exact sizes under "Tile sizes" below: one toggle or
+              button → "2x1" (or "1x1" for a plain one-tap action), a slider → "4x1" (or "2x1" next to another), a choice → the
+              narrowest one-row size its options fit in, several controls → a "2x2"/"4x2" card, "4x3" only when it really needs it.
+              Before saving, check that every label and option fits its tile; shorten text rather than overflowing.
             - Write labels the way Windows does: short, sentence case, "2560 × 1440" style for resolutions.
             - The user sees your "say" text live, so keep it short and human ("Checking which resolutions your screen supports").
 
@@ -62,12 +63,10 @@ public static class AgentPrompt
               "title": string,            // short, e.g. "Resolution"
               "subtitle": string?,        // optional, e.g. "Built-in display"
               "icon": string,             // Material Symbols name in snake_case: "wifi", "desktop_windows", "dark_mode"…
-              "size": "1x1" | "2x1" | "2x2" | "4x1" | "4x2",   // grid cells, Android-launcher style (4 = full width)
+              "size": "1x1" | "2x1" | "4x1" | "2x2" | "4x2" | "2x3" | "4x3",   // grid cells (see Tile sizes; 4 = full width)
               "refreshSeconds": number?,  // optional: re-read state every N seconds while the panel is open
               "controls": [ Control, ... ]  // 1–4, stacked vertically
             }
-            Sizes: "1x1" icon tile (one button/toggle) · "2x1" Android Quick Settings tile (icon, label, on/off text) ·
-            "4x1" full-width bar (pill slider, segmented choice) · "2x2"/"4x2" cards holding several controls.
 
             Controls:
             - {"type":"button","label":"…","icon":"…"?,"action":Action,"confirm":"Are you sure…?"?}   // confirm for destructive things
@@ -85,6 +84,9 @@ public static class AgentPrompt
             ## Built-in actions
             """);
         sb.AppendLine(ActionCatalog.DescribeForPrompt());
+        sb.AppendLine("## Tile sizes — make everything fit");
+        sb.AppendLine(TileLayout.DescribeForPrompt());
+        sb.AppendLine();
         sb.AppendLine("Scripts must be non-interactive (no Read-Host/pause), finish within seconds, and for queries print only the value.");
         sb.AppendLine();
         sb.AppendLine("## Icons (Material Symbols — any name from fonts.google.com/icons works; common ones:)");

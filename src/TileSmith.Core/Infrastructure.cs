@@ -14,6 +14,9 @@ public static class AppPaths
             ? custom
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TileSmith");
 
+    /// <summary>True for a sandboxed copy (TILESMITH_DATA_DIR): it runs alongside the installed TileSmith.</summary>
+    public static bool IsCustomDataDir => Environment.GetEnvironmentVariable("TILESMITH_DATA_DIR") is { Length: > 0 };
+
     public static string SettingsFile => Path.Combine(DataDir, "settings.json");
     public static string WidgetsFile => Path.Combine(DataDir, "widgets.json");
     public static string KnownHostsFile => Path.Combine(DataDir, "known_hosts.json");

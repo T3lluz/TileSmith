@@ -22,37 +22,45 @@ using WinRT.Interop;
 namespace TileSmith.Views;
 
 /// <summary>
-/// The panel: an Android-style sheet that rises from the taskbar corner. Clock and status up top, a
-/// launcher-like grid of widgets, and the AI composer at the bottom that builds widgets right into the grid.
+/// The panel: an Android-style sheet that rises from the taskbar corner. Clock, the AI in use and quick actions up
+/// top, a launcher-like grid of widgets (or the widget gallery), and the AI composer at the bottom that builds
+/// widgets right into the grid.
 /// </summary>
 public sealed partial class PanelWindow : Window
 {
     private const double SurfacePadding = 16;
     private const double ShadowMargin = 18;
     private const double EdgeGap = 14;
-    private const double CellWidth = 118;
+    private const double WidthSlack = 6;
 
     private readonly AppHost _host;
     private readonly IntPtr _hwnd;
     private readonly AppWindow _appWindow;
     private readonly List<Action> _undo = [];
+    private readonly HashSet<string> _celebrate = [];
     private readonly DispatcherTimer _clockTimer = new() { Interval = TimeSpan.FromSeconds(10) };
     private readonly DispatcherTimer _resultTimer = new() { Interval = TimeSpan.FromSeconds(7) };
 
     // chrome
+    private Grid _clipHost = null!;
     private Grid _surface = null!;
+    private Grid _header = null!;
     private TextBlock _clock = null!;
     private TextBlock _date = null!;
     private LiveDot _statusDot = null!;
-    private TextBlock _statusText = null!;
-    private Pressable _statusChip = null!;
+    private TextBlock _modelText = null!;
+    private Grid _modelAvatarHost = null!;
+    private Pressable _modelChip = null!;
     private IconButton _pinButton = null!;
     private IconButton _editButton = null!;
     private Grid _settingsBadge = null!;
     private StackPanel _banners = null!;
     private ScrollViewer _boardScroll = null!;
+    private StackPanel _boardStack = null!;
     private TileBoard _board = null!;
-    private TextBlock _emptyHint = null!;
+    private FrameworkElement _emptyState = null!;
+    private Grid _editHint = null!;
+    private GallerySheet? _gallery;
 
     // AI surface
     private Border _activity = null!;
@@ -86,12 +94,15 @@ public sealed partial class PanelWindow : Window
     private CancellationTokenSource? _agentCts;
     private WidgetDefinition? _editing;
     private string _sizePreference = "auto";
-    private string? _celebrateId;
     private TaskCompletionSource<bool>? _approval;
     private TaskCompletionSource<string>? _question;
     private bool _updateDismissed;
     private bool _resizeQueued;
     private string? _styleApplied;
+    private int _historyIndex = -1;
+    private Flyout? _modelFlyout;
+    private double _lastSurfaceHeight;
+    private int _frameX, _frameY;
 
     public PanelWindow(AppHost host)
     {
@@ -116,10 +127,54 @@ public sealed partial class PanelWindow : Window
         _clockTimer.Tick += (_, _) => UpdateClock();
         _resultTimer.Tick += (_, _) => { _resultTimer.Stop(); ShowComposerState(ComposerState.Input); };
 
+        ApplyTheme();
         Rebuild();
     }
 
     public bool IsOpen => _visible;
+
+    // ── Dev capture (--capture) ─────────────────────────────────────────────────────
+
+    internal static readonly string[] CaptureStates = ["default", "edit", "gallery", "working", "models"];
+
+    internal UIElement CaptureRoot => Root;
+
+    internal void PrepareCapture(string state)
+    {
+        Show();
+        SetPinned(true);
+        CloseGallery();
+        _boardScroll.Content = _boardStack;
+        SetEditMode(state == "edit");
+        _activity.Visibility = Visibility.Collapsed;
+        ShowComposerState(ComposerState.Input);
+        switch (state)
+        {
+            case "gallery":
+                OpenGallery();
+                break;
+            case "working":
+                _activityList.Children.Clear();
+                AddSay("A toggle for my VPN", isUser: true);
+                AddSay("Checking which VPN connections Windows knows about");
+                var step = new AgentStep { Tool = "powershell", Title = "Running PowerShell", Detail = "Get-VpnConnection" };
+                AddStep(step);
+                step.State = StepState.Done;
+                step.Output = "Name: Home";
+                FinishStep(step);
+                AddStep(new AgentStep { Tool = "test_action", Title = "Testing shell.powershell" });
+                _activity.Visibility = Visibility.Visible;
+                _statusLine.Text = "Testing shell.powershell…";
+                ShowComposerState(ComposerState.Working);
+                _board.ShowGhost(new CellSize(2, 1));
+                break;
+            case "models":
+                // flyouts aren't captured: show the picker inline instead
+                _boardScroll.Content = new ModelPicker(_host, (_, _) => { }, () => { });
+                break;
+        }
+        QueueResize();
+    }
 
     // ── Window ──────────────────────────────────────────────────────────────────────
 
@@ -161,13 +216,26 @@ public sealed partial class PanelWindow : Window
         var margins = Solid ? new Native.MARGINS { Left = -1, Right = -1, Top = -1, Bottom = -1 } : new Native.MARGINS();
         Native.DwmExtendFrameIntoClientArea(_hwnd, ref margins);
         SystemBackdrop = Solid ? new TransparentBackdrop() : new GlassBackdrop();
+        _frameX = _frameY = 0;
+    }
+
+    private void ApplyTheme()
+    {
+        Root.RequestedTheme = _host.Settings.Theme switch
+        {
+            "light" => ElementTheme.Light,
+            "dark" => ElementTheme.Dark,
+            _ => ElementTheme.Default,
+        };
+        Motion.Reduced = _host.Settings.ReduceMotion;
     }
 
     private void OnSettingsChanged()
     {
-        var before = Palette.Current.Accent;
+        var before = (Palette.Current.Accent, Palette.Current.IsDark, Root.RequestedTheme);
+        ApplyTheme();
         Palette.Apply(Root.ActualTheme != ElementTheme.Light, _host.Settings.Accent);
-        if (_styleApplied != (Solid ? "solid" : "glass") || before != Palette.Current.Accent) Rebuild();
+        if (_styleApplied != (Solid ? "solid" : "glass") || before != (Palette.Current.Accent, Palette.Current.IsDark, Root.RequestedTheme)) Rebuild();
         ApplyColumns();
         UpdateStatus();
         UpdateBanners();
@@ -180,6 +248,8 @@ public sealed partial class PanelWindow : Window
         Palette.Apply(Root.ActualTheme != ElementTheme.Light, _host.Settings.Accent);
         ApplyStyle();
         var p = Palette.Current;
+        var galleryWasOpen = _gallery is not null;
+        _gallery = null;
         Root.Children.Clear();
         Root.Background = new SolidColorBrush(Colors.Transparent);
 
@@ -193,31 +263,33 @@ public sealed partial class PanelWindow : Window
         };
         for (var i = 0; i < 4; i++) _surface.RowDefinitions.Add(new RowDefinition { Height = i == 2 ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
 
-        _surface.Children.Add(BuildHeader());
+        _header = BuildHeader();
+        _surface.Children.Add(_header);
 
         _banners = new StackPanel { Spacing = 8, Margin = new Thickness(SurfacePadding, 0, SurfacePadding, 0) };
         Grid.SetRow(_banners, 1);
         _surface.Children.Add(_banners);
 
-        _board = new TileBoard { CellWidth = CellWidth, HorizontalAlignment = HorizontalAlignment.Center };
-        _board.EditModeRequested += () => SetEditMode(true);
+        _board = new TileBoard { HorizontalAlignment = HorizontalAlignment.Center };
         _board.OrderChanged += OnOrderChanged;
         _board.Resized += OnResized;
-        _board.AddRequested += () => { SetEditMode(false); _prompt.Focus(FocusState.Programmatic); };
+        _board.AddRequested += () => OpenGallery();
         _board.GestureEnded += QueueResize;
-        _emptyHint = Ui.Text("Describe a widget below — it'll appear right here.", 13, p.Text3, maxLines: 2);
-        _emptyHint.HorizontalAlignment = HorizontalAlignment.Center;
-        _emptyHint.Margin = new Thickness(0, 24, 0, 24);
-        var boardStack = new StackPanel();
-        boardStack.Children.Add(_board);
-        boardStack.Children.Add(_emptyHint);
+        _emptyState = BuildEmptyState();
+        _editHint = BuildEditHint();
+        _boardStack = new StackPanel();
+        _boardStack.Children.Add(_editHint);
+        _boardStack.Children.Add(_board);
+        _boardStack.Children.Add(_emptyState);
         _boardScroll = new ScrollViewer
         {
-            Content = boardStack,
-            Padding = new Thickness(SurfacePadding, 4, SurfacePadding, 6),
+            Content = _boardStack,
+            Padding = new Thickness(SurfacePadding, 4, SurfacePadding, 8),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollMode = ScrollMode.Disabled,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
+        _board.Scroller = _boardScroll;
         Grid.SetRow(_boardScroll, 2);
         _surface.Children.Add(_boardScroll);
 
@@ -225,54 +297,66 @@ public sealed partial class PanelWindow : Window
         Grid.SetRow(ai, 3);
         _surface.Children.Add(ai);
 
+        // the clip host carries the grow animation; the surface keeps its own facade animations
+        _clipHost = new Grid();
         var shadowHost = new Grid { IsHitTestVisible = false };
-        Root.Children.Add(shadowHost); // behind the surface: child visuals draw above their host's content
-        Root.Children.Add(_surface);
+        _clipHost.Children.Add(shadowHost); // behind the surface: child visuals draw above their host's content
+        _clipHost.Children.Add(_surface);
+        Root.Children.Add(_clipHost);
         if (Solid) Motion.AttachShadow(shadowHost, _surface, blur: 26, opacity: p.IsDark ? 0.55f : 0.22f, offsetY: 8, radius: 28);
 
         LoadTiles();
         UpdateClock();
         UpdateStatus();
         UpdateBanners();
+        if (galleryWasOpen) OpenGallery();
         QueueResize();
     }
 
-    private UIElement BuildHeader()
+    private Grid BuildHeader()
     {
         var p = Palette.Current;
-        var header = new Grid { Padding = new Thickness(SurfacePadding + 6, 14, SurfacePadding - 2, 8), ColumnSpacing = 8 };
+        var header = new Grid { Padding = new Thickness(SurfacePadding + 6, 14, SurfacePadding - 4, 8), ColumnSpacing = 10 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var time = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10, VerticalAlignment = VerticalAlignment.Center };
-        _clock = Ui.Text("", 26, p.Text1, semibold: true);
-        _clock.FontFamily = new FontFamily("Segoe UI Variable Display");
+        _clock = Kit.Title("", 26);
+        _clock.VerticalAlignment = VerticalAlignment.Center;
+        header.Children.Add(_clock);
         _date = Ui.Text("", 13, p.Text2);
         _date.VerticalAlignment = VerticalAlignment.Bottom;
         _date.Margin = new Thickness(0, 0, 0, 5);
-        time.Children.Add(_clock);
-        time.Children.Add(_date);
-        header.Children.Add(time);
+        Grid.SetColumn(_date, 1);
+        header.Children.Add(_date);
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        _statusChip = new Pressable { Height = 30, CornerRadius = new CornerRadius(15), Fill = p.Overlay(0.06), Margin = new Thickness(0, 0, 6, 0) };
-        var chipRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new Thickness(12, 0, 14, 0), VerticalAlignment = VerticalAlignment.Center };
-        _statusDot = new LiveDot(7);
-        _statusText = Ui.Text("", 12, p.Text2, semibold: true);
-        _statusText.MaxWidth = 170;
-        _statusText.VerticalAlignment = VerticalAlignment.Center;
-        chipRow.Children.Add(_statusDot);
-        chipRow.Children.Add(_statusText);
-        _statusChip.SetContent(chipRow);
-        _statusChip.Click += (_, _) => OpenSettings("connection");
-        actions.Children.Add(_statusChip);
 
-        _pinButton = new IconButton("keep_off", "Keep open", 34, 18);
-        _pinButton.Click += (_, _) => SetPinned(!_pinned);
-        actions.Children.Add(_pinButton);
+        // the AI in use: tap to pick another provider or model
+        _modelChip = new Pressable { Height = 32, CornerRadius = new CornerRadius(16), Fill = p.Overlay(0.06), Margin = new Thickness(0, 0, 4, 0) };
+        var chipRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 7, Padding = new Thickness(5, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+        _modelAvatarHost = new Grid { Width = 22, Height = 22 };
+        _statusDot = new LiveDot(7) { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, -1, -1) };
+        var avatarStack = new Grid();
+        avatarStack.Children.Add(_modelAvatarHost);
+        avatarStack.Children.Add(_statusDot);
+        chipRow.Children.Add(avatarStack);
+        _modelText = Ui.Text("", 12, p.Text1, semibold: true);
+        _modelText.MaxWidth = 130;
+        _modelText.VerticalAlignment = VerticalAlignment.Center;
+        chipRow.Children.Add(_modelText);
+        chipRow.Children.Add(Glyph.Make("expand_more", 16, p.Text3));
+        _modelChip.SetContent(chipRow);
+        _modelChip.AccessibleName = "Choose the AI model";
+        _modelChip.Click += (_, _) => ShowModelPicker();
+        actions.Children.Add(_modelChip);
+
         _editButton = new IconButton("edit", "Edit tiles", 34, 18);
         _editButton.Click += (_, _) => SetEditMode(!_editMode);
         actions.Children.Add(_editButton);
+        _pinButton = new IconButton("keep_off", "Keep open", 34, 18);
+        _pinButton.Click += (_, _) => SetPinned(!_pinned);
+        actions.Children.Add(_pinButton);
 
         var settingsHost = new Grid();
         var settings = new IconButton("settings", "Settings", 34, 18);
@@ -281,10 +365,35 @@ public sealed partial class PanelWindow : Window
         _settingsBadge = new Grid { Width = 8, Height = 8, CornerRadius = new CornerRadius(4), Background = p.Brush(p.Accent), HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 6, 6, 0), IsHitTestVisible = false, Visibility = Visibility.Collapsed };
         settingsHost.Children.Add(_settingsBadge);
         actions.Children.Add(settingsHost);
-        Grid.SetColumn(actions, 1);
+        Grid.SetColumn(actions, 2);
         header.Children.Add(actions);
         RefreshHeaderButtons();
         return header;
+    }
+
+    private Grid BuildEditHint()
+    {
+        var p = Palette.Current;
+        var hint = new Grid { ColumnSpacing = 8, Padding = new Thickness(12, 8, 12, 8), Margin = new Thickness(0, 0, 0, 10), CornerRadius = new CornerRadius(14), Background = p.Brush(p.AccentSoft), Visibility = Visibility.Collapsed };
+        hint.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        hint.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        hint.Children.Add(Glyph.Make("pan_tool", 16, p.Accent));
+        var text = Ui.Text("Hold a tile, then drag it to move it  ·  ↘ resizes  ·  ✦ changes it with AI", 12, p.Text1, maxLines: 2);
+        text.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(text, 1);
+        hint.Children.Add(text);
+        return hint;
+    }
+
+    private FrameworkElement BuildEmptyState()
+    {
+        var empty = Kit.Empty("widgets", "Your panel is empty", "Add ready-made widgets, or describe one below and the AI builds it.");
+        var browse = Kit.Button("Browse widgets", "add", ChipStyle.Filled, () => OpenGallery());
+        browse.HorizontalAlignment = HorizontalAlignment.Center;
+        browse.Margin = new Thickness(0, 8, 0, 0);
+        empty.Children.Add(browse);
+        empty.Visibility = Visibility.Collapsed;
+        return empty;
     }
 
     private FrameworkElement BuildAiArea()
@@ -294,7 +403,7 @@ public sealed partial class PanelWindow : Window
 
         // live activity (steps, questions, approvals)
         _activityList = new StackPanel { Spacing = 6 };
-        _activityScroll = new ScrollViewer { Content = _activityList, MaxHeight = 150, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        _activityScroll = new ScrollViewer { Content = _activityList, MaxHeight = 168, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Disabled };
         _interaction = new StackPanel { Spacing = 8 };
         var activityStack = new StackPanel { Spacing = 10 };
         activityStack.Children.Add(_activityScroll);
@@ -318,6 +427,7 @@ public sealed partial class PanelWindow : Window
         // "changing this widget" chip
         _editingText = Ui.Text("", 12, p.OnAccent, semibold: true);
         _editingText.VerticalAlignment = VerticalAlignment.Center;
+        _editingText.MaxWidth = 260;
         var editingRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Padding = new Thickness(10, 0, 4, 0) };
         editingRow.Children.Add(Glyph.Make("auto_awesome", 14, p.OnAccent));
         editingRow.Children.Add(_editingText);
@@ -341,7 +451,7 @@ public sealed partial class PanelWindow : Window
         // the composer pill
         _composer = new Border
         {
-            Height = 52,
+            MinHeight = 52,
             CornerRadius = new CornerRadius(26),
             Background = p.Brush(p.Chrome),
             BorderBrush = p.Brush(p.HairlineStrong),
@@ -363,7 +473,7 @@ public sealed partial class PanelWindow : Window
     private Grid BuildInputRow()
     {
         var p = Palette.Current;
-        var row = new Grid { ColumnSpacing = 6, Padding = new Thickness(14, 0, 6, 0) };
+        var row = new Grid { ColumnSpacing = 6, Padding = new Thickness(14, 0, 6, 0), MinHeight = 50 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -373,15 +483,17 @@ public sealed partial class PanelWindow : Window
 
         _prompt = new TextBox
         {
-            PlaceholderText = _editing is null ? "Ask TileSmith to build a widget…" : "What should change?",
+            PlaceholderText = _editing is null ? "Describe a widget to build…" : "What should change?",
             VerticalAlignment = VerticalAlignment.Center,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(6, 6, 6, 6),
             FontSize = 14,
             AcceptsReturn = false,
             IsSpellCheckEnabled = false,
+            TextWrapping = TextWrapping.Wrap,
+            MaxHeight = 96,
         };
-        StyleTextBox(_prompt);
+        Kit.Transparent(_prompt);
         _prompt.KeyDown += Prompt_KeyDown;
         _prompt.TextChanged += (_, _) => { RefreshSendButton(); if (_prompt.Text.Length > 0) ShowSuggestions(false); };
         _prompt.GotFocus += (_, _) => ShowSuggestions(true);
@@ -402,22 +514,23 @@ public sealed partial class PanelWindow : Window
     private Grid BuildStatusRow()
     {
         var p = Palette.Current;
-        var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(18, 0, 8, 0), Visibility = Visibility.Collapsed };
+        var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(18, 0, 8, 0), Visibility = Visibility.Collapsed, MinHeight = 50 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         // tapping the status shows/hides the step-by-step activity
-        var tap = new Pressable { CornerRadius = new CornerRadius(26), Background = new SolidColorBrush(Colors.Transparent), Margin = new Thickness(-18, 0, 0, 0), AccessibleName = "Show steps" };
+        var tap = new Pressable { CornerRadius = new CornerRadius(26), Fill = Colors.Transparent, Margin = new Thickness(-18, 0, 0, 0), AccessibleName = "Show steps" };
         tap.Click += (_, _) =>
         {
             _activity.Visibility = _activity.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+            if (_activity.Visibility == Visibility.Visible) Motion.Enter(_activity, 8);
             QueueResize();
         };
         Grid.SetColumnSpan(tap, 2);
         row.Children.Add(tap);
         _scanner = new WorkingScanner(5, 2) { Color = p.Accent, IsHitTestVisible = false };
         row.Children.Add(_scanner);
-        _statusLine = Ui.Text("Working…", 13.5, p.Text1);
+        _statusLine = Ui.TipWhenTrimmed(Ui.Text("Working…", 13.5, p.Text1));
         _statusLine.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(_statusLine, 1);
         row.Children.Add(_statusLine);
@@ -431,14 +544,14 @@ public sealed partial class PanelWindow : Window
     private Grid BuildResultRow()
     {
         var p = Palette.Current;
-        var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(18, 0, 8, 0), Visibility = Visibility.Collapsed };
+        var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(18, 0, 8, 0), Visibility = Visibility.Collapsed, MinHeight = 50 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _resultIcon = Glyph.Make("check_circle", 20, p.Success);
         row.Children.Add(_resultIcon);
-        _resultText = Ui.Text("", 13.5, p.Text1);
+        _resultText = Ui.TipWhenTrimmed(Ui.Text("", 13.5, p.Text1));
         _resultText.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(_resultText, 1);
         row.Children.Add(_resultText);
@@ -459,24 +572,10 @@ public sealed partial class PanelWindow : Window
         return row;
     }
 
-    private static void StyleTextBox(TextBox box)
-    {
-        var p = Palette.Current;
-        var transparent = new SolidColorBrush(Colors.Transparent);
-        foreach (var key in new[] { "TextControlBackground", "TextControlBackgroundPointerOver", "TextControlBackgroundFocused", "TextControlBackgroundDisabled",
-                                    "TextControlBorderBrush", "TextControlBorderBrushPointerOver", "TextControlBorderBrushFocused", "TextControlBorderBrushDisabled" })
-            box.Resources[key] = transparent;
-        foreach (var key in new[] { "TextControlForeground", "TextControlForegroundPointerOver", "TextControlForegroundFocused" })
-            box.Resources[key] = p.Brush(p.Text1);
-        foreach (var key in new[] { "TextControlPlaceholderForeground", "TextControlPlaceholderForegroundPointerOver", "TextControlPlaceholderForegroundFocused" })
-            box.Resources[key] = p.Brush(p.Text3);
-        box.Resources["TextControlBorderThemeThicknessFocused"] = new Thickness(0);
-        box.SelectionHighlightColor = p.Brush(Palette.WithAlpha(p.Accent, 0.45));
-    }
-
     private Chip MakeSizeChip()
     {
-        var chip = new Chip(_sizePreference == "auto" ? "Auto" : _sizePreference.Replace('x', '×'), "grid_view", height: 30) { VerticalAlignment = VerticalAlignment.Center };
+        var label = _sizePreference == "auto" ? "Auto" : _sizePreference.Replace('x', '×');
+        var chip = new Chip(label, "grid_view", height: 30, style: ChipStyle.Tonal) { VerticalAlignment = VerticalAlignment.Center };
         ToolTipService.SetToolTip(chip, "Widget size — Auto lets the AI choose");
         chip.Click += (_, _) => SizeMenu().ShowAt(chip);
         Grid.SetColumn(chip, 2);
@@ -486,7 +585,7 @@ public sealed partial class PanelWindow : Window
     private MenuFlyout SizeMenu()
     {
         var menu = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Top };
-        foreach (var (id, text) in new[] { ("auto", "Auto — let the AI choose"), ("1x1", "1×1 icon tile"), ("2x1", "2×1 Quick Settings tile"), ("2x2", "2×2 square"), ("4x1", "4×1 full-width bar"), ("4x2", "4×2 large card") })
+        foreach (var (id, text) in new[] { ("auto", "Auto — let the AI choose"), ("1x1", "1 × 1  Icon"), ("2x1", "2 × 1  Quick Settings tile"), ("4x1", "4 × 1  Full-width bar"), ("2x2", "2 × 2  Square card"), ("4x2", "4 × 2  Large card") })
         {
             var item = new RadioMenuFlyoutItem { Text = text, GroupName = "size", IsChecked = _sizePreference == id };
             item.Click += (_, _) =>
@@ -499,6 +598,36 @@ public sealed partial class PanelWindow : Window
             menu.Items.Add(item);
         }
         return menu;
+    }
+
+    // ── Model picker ────────────────────────────────────────────────────────────────
+
+    private void ShowModelPicker()
+    {
+        var picker = new ModelPicker(_host, (providerId, model) =>
+        {
+            _modelFlyout?.Hide();
+            if (providerId == "auto")
+            {
+                _host.Settings.Ai.Engine = "auto";
+            }
+            else
+            {
+                _host.Settings.Ai.Engine = providerId;
+                _host.Settings.Ai.SetModel(providerId, model);
+            }
+            _host.SaveSettings();
+            UpdateStatus();
+            Motion.Pulse(_modelAvatarHost, 1.15f);
+        }, () =>
+        {
+            _modelFlyout?.Hide();
+            OpenSettings("ai");
+        });
+        _modelFlyout = ModelPicker.Flyout(picker);
+        _modelFlyout.Opened += (_, _) => _dialogOpen = true;
+        _modelFlyout.Closed += (_, _) => _dialogOpen = false;
+        _modelFlyout.ShowAt(_modelChip);
     }
 
     // ── Tiles ───────────────────────────────────────────────────────────────────────
@@ -516,14 +645,11 @@ public sealed partial class PanelWindow : Window
             {
                 var tile = new WidgetTile(widget, _host);
                 tile.Command += OnTileCommand;
+                tile.ResizeRequested += (t, size) => _host.ResizeWidget(t.Widget.Id, size.ToString());
                 tile.Failed += (t, message) => ShowNotice($"{t.Widget.Title}: {message}", warning: true);
                 tiles.Add(tile);
                 if (_visible) { _ = tile.RefreshAsync(); tile.StartPolling(); }
-                if (widget.Id == _celebrateId)
-                {
-                    _celebrateId = null;
-                    tile.Loaded += (_, _) => tile.Celebrate();
-                }
+                if (_celebrate.Remove(widget.Id)) tile.Loaded += (_, _) => tile.Celebrate();
             }
             catch (Exception ex)
             {
@@ -532,7 +658,7 @@ public sealed partial class PanelWindow : Window
         }
         _board.Load(tiles);
         _board.IsEditMode = _editMode;
-        _emptyHint.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _emptyState.Visibility = tiles.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         ApplyColumns();
         QueueResize();
     }
@@ -544,11 +670,15 @@ public sealed partial class PanelWindow : Window
         if (setting is >= 3 and <= 5)
         {
             _board.Columns = setting;
-            return;
         }
-        // automatic: 4 columns (≈4:3 panel), widening to 5 once 4 would need many rows
-        var cells = _host.Widgets.Sum(w => { var c = w.Cells; return Math.Min(c.W, 4) * c.H; });
-        _board.Columns = cells > 4 * 6 ? 5 : 4;
+        else
+        {
+            // automatic: 4 columns (≈4:3 panel), widening to 5 once 4 would need many rows
+            var cells = _host.Widgets.Sum(w => { var c = w.Cells; return Math.Min(c.W, 4) * c.H; });
+            _board.Columns = cells > 4 * 6 ? 5 : 4;
+        }
+        if (_modelText is not null) _modelText.MaxWidth = _board.Columns <= 3 ? 84 : 130;
+        if (_date is not null) _date.Visibility = _board.Columns <= 3 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void OnOrderChanged(IReadOnlyList<string> ids)
@@ -581,6 +711,7 @@ public sealed partial class PanelWindow : Window
             case TileCommand.Duplicate:
                 var copy = widget.Clone();
                 copy.Id = WidgetDefinition.NewId();
+                _celebrate.Add(copy.Id);
                 _host.InsertWidget(_host.IndexOf(widget.Id) + 1, copy);
                 break;
             case TileCommand.Remove:
@@ -593,6 +724,7 @@ public sealed partial class PanelWindow : Window
 
     private async Task EditJsonAsync(WidgetDefinition widget)
     {
+        var p = Palette.Current;
         var box = new TextBox
         {
             Text = widget.ToJson(),
@@ -603,7 +735,7 @@ public sealed partial class PanelWindow : Window
             Height = 300,
             IsSpellCheckEnabled = false,
         };
-        var error = Ui.Text("", 12, Palette.Current.Error, maxLines: 6);
+        var error = Ui.Text("", 12, p.Error, maxLines: 6);
         var content = new StackPanel { Spacing = 8 };
         content.Children.Add(box);
         content.Children.Add(error);
@@ -630,7 +762,7 @@ public sealed partial class PanelWindow : Window
                     e.Cancel = true;
                     return;
                 }
-                _celebrateId = edited.Id;
+                _celebrate.Add(edited.Id);
                 _host.UpsertWidget(edited);
             }
             catch (Exception ex)
@@ -646,8 +778,14 @@ public sealed partial class PanelWindow : Window
 
     private void SetEditMode(bool on)
     {
+        if (on && _gallery is not null) CloseGallery();
         _editMode = on;
         if (_board is not null) _board.IsEditMode = on;
+        if (_editHint is not null)
+        {
+            _editHint.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            if (on) Motion.Enter(_editHint, -6);
+        }
         RefreshHeaderButtons();
         QueueResize();
     }
@@ -669,7 +807,42 @@ public sealed partial class PanelWindow : Window
         ToolTipService.SetToolTip(_pinButton, _pinned ? "Close when I click elsewhere" : "Keep open");
         _editButton.SetIcon(_editMode ? "check" : "edit");
         _editButton.SetColors(_editMode ? p.Accent : Colors.Transparent, _editMode ? p.OnAccent : p.Text2);
-        ToolTipService.SetToolTip(_editButton, _editMode ? "Done" : "Edit tiles (or long-press a tile)");
+        ToolTipService.SetToolTip(_editButton, _editMode ? "Done" : "Edit tiles (or hold a tile)");
+    }
+
+    // ── Gallery ─────────────────────────────────────────────────────────────────────
+
+    public void OpenGallery(bool focusSearch = false)
+    {
+        if (_editMode) SetEditMode(false);
+        _gallery ??= new GallerySheet(_host, _board.BoardWidth, widget =>
+        {
+            _celebrate.Add(widget.Id);
+            _host.UpsertWidget(widget);
+        }, () =>
+        {
+            CloseGallery();
+            _prompt.Focus(FocusState.Programmatic);
+        }, CloseGallery);
+        if (!ReferenceEquals(_boardScroll.Content, _gallery))
+        {
+            _boardScroll.Content = _gallery;
+            _boardScroll.ChangeView(null, 0, null, true);
+            Motion.Enter(_gallery, 18);
+        }
+        if (focusSearch) _gallery.FocusSearch();
+        QueueResize();
+    }
+
+    private void CloseGallery()
+    {
+        if (_gallery is null || _boardScroll is null) return;
+        _gallery = null;
+        _boardScroll.Content = _boardStack;
+        Motion.Enter(_boardStack, -12);
+        var i = 0;
+        foreach (var tile in _board.Tiles) Motion.Enter(tile, 6, Math.Min(i++ * 14, 160), Motion.Normal);
+        QueueResize();
     }
 
     // ── Show / hide / position ──────────────────────────────────────────────────────
@@ -687,6 +860,7 @@ public sealed partial class PanelWindow : Window
         UpdateStatus();
         UpdateBanners();
         UpdateClock();
+        _lastSurfaceHeight = 0; // no grow animation while opening
         PositionWindow();
         if (!_visible)
         {
@@ -695,11 +869,14 @@ public sealed partial class PanelWindow : Window
             _appWindow.Show(true);
             Activate();
             Native.ForceForeground(_hwnd);
+            MeasureFrame();
             Motion.PanelIn(_surface, fromBottom: true);
-            var i = 0;
-            foreach (var tile in _board.Tiles)
+            // tiles cascade in from the corner the panel opens from
+            var tiles = _board.Tiles.ToList();
+            for (var i = 0; i < tiles.Count; i++)
             {
-                Motion.Enter(tile, 8, Math.Min(i++ * 18, 220), Motion.Normal);
+                var tile = tiles[i];
+                if (!Motion.Reduced) Motion.Enter(tile, 10, Math.Min((tiles.Count - 1 - i) * 16, 200), Motion.Normal);
                 _ = tile.RefreshAsync();
                 tile.StartPolling();
             }
@@ -736,6 +913,8 @@ public sealed partial class PanelWindow : Window
         _clockTimer.Stop();
         foreach (var tile in _board.Tiles) tile.StopPolling();
         if (_editMode) SetEditMode(false);
+        if (_gallery is not null) CloseGallery();
+        _modelFlyout?.Hide();
         _appWindow.Hide();
     }
 
@@ -747,13 +926,63 @@ public sealed partial class PanelWindow : Window
         Hide();
     }
 
+    /// <summary>Puts text in the composer (deep link: TileSmith.exe --prompt "…").</summary>
+    public void SetPrompt(string text)
+    {
+        _prompt.Text = text;
+        _prompt.SelectionStart = text.Length;
+        _prompt.Focus(FocusState.Programmatic);
+    }
+
     private void Root_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key != VirtualKey.Escape || _dialogOpen) return;
-        e.Handled = true;
-        if (_editMode) SetEditMode(false);
-        else if (_editing is not null) ClearEditing();
-        else Hide();
+        if (_dialogOpen) return;
+        var ctrl = Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+        switch (e.Key)
+        {
+            case VirtualKey.Escape:
+                e.Handled = true;
+                if (_gallery is not null) CloseGallery();
+                else if (_editMode) SetEditMode(false);
+                else if (_editing is not null) ClearEditing();
+                else Hide();
+                break;
+            // Ctrl+K ask the AI · Ctrl+G gallery · Ctrl+E edit tiles · Ctrl+M choose the model · Ctrl+, settings
+            case VirtualKey.K when ctrl:
+                e.Handled = true;
+                if (_gallery is not null) CloseGallery();
+                _prompt.Focus(FocusState.Keyboard);
+                break;
+            case VirtualKey.G when ctrl:
+                e.Handled = true;
+                if (_gallery is null) OpenGallery(focusSearch: true); else CloseGallery();
+                break;
+            case VirtualKey.E when ctrl:
+                e.Handled = true;
+                SetEditMode(!_editMode);
+                break;
+            case VirtualKey.M when ctrl:
+                e.Handled = true;
+                ShowModelPicker();
+                break;
+            case (VirtualKey)188 when ctrl: // Ctrl+,
+                e.Handled = true;
+                OpenSettings(null);
+                break;
+        }
+    }
+
+    /// <summary>The window frame Windows keeps around a borderless window (it eats into the client area).</summary>
+    private void MeasureFrame()
+    {
+        var size = _appWindow.Size;
+        var client = _appWindow.ClientSize;
+        var fx = Math.Max(0, size.Width - client.Width);
+        var fy = Math.Max(0, size.Height - client.Height);
+        if (fx == _frameX && fy == _frameY) return;
+        _frameX = fx;
+        _frameY = fy;
+        PositionWindow();
     }
 
     private void PositionWindow()
@@ -782,11 +1011,11 @@ public sealed partial class PanelWindow : Window
         }
 
         var maxSurfaceHeight = work.Height / scale - 2 * EdgeGap;
-        var surfaceWidth = _board.BoardWidth + 2 * SurfacePadding + 6; // + border and layout-rounding slack
+        var surfaceWidth = _board.BoardWidth + 2 * SurfacePadding + 2 /* border */ + WidthSlack;
         var surfaceHeight = MeasureSurface(surfaceWidth, maxSurfaceHeight);
         var m = ShadowSpace;
-        var width = (int)Math.Round((surfaceWidth + 2 * m) * scale);
-        var height = (int)Math.Round((surfaceHeight + 2 * m) * scale);
+        var width = (int)Math.Ceiling((surfaceWidth + 2 * m) * scale) + _frameX;
+        var height = (int)Math.Ceiling((surfaceHeight + 2 * m) * scale) + _frameY;
         var gap = (int)Math.Round((EdgeGap - m) * scale);
 
         var x = work.X + work.Width - width - gap;
@@ -794,6 +1023,11 @@ public sealed partial class PanelWindow : Window
         if (work.X > outer.X) x = work.X + gap;
         if (work.Y > outer.Y) y = work.Y + gap;
         _appWindow.MoveAndResize(new RectInt32(x, y, width, height));
+
+        // a taller panel slides open upward instead of jumping
+        if (_visible && _lastSurfaceHeight > 0 && surfaceHeight > _lastSurfaceHeight + 1)
+            Motion.GrowFromBottom(_clipHost, (float)(surfaceHeight - _lastSurfaceHeight), _header, _banners);
+        _lastSurfaceHeight = surfaceHeight;
     }
 
     private double MeasureSurface(double width, double maxHeight)
@@ -837,43 +1071,43 @@ public sealed partial class PanelWindow : Window
 
     private void UpdateStatus()
     {
-        if (_statusText is null) return;
+        if (_modelText is null) return;
         var p = Palette.Current;
-        var engine = AiEngineFactory.ResolveEngine(_host.Settings);
-        string text;
+        var settings = _host.Settings;
+        var provider = AiEngineFactory.ResolveProvider(settings);
+        var model = settings.Ai.ModelFor(provider.Id);
+        _modelText.Text = ProviderCatalog.ModelLabel(provider, model);
+        _modelAvatarHost.Children.Clear();
+        _modelAvatarHost.Children.Add(new Avatar(provider.Monogram, Palette.Parse(provider.Color), 22));
+
         Color color;
         var live = false;
-        if (engine is "claude" or "cursor")
+        string tip;
+        if (ProviderCatalog.NeedsServer(provider, settings.Ai))
         {
-            text = engine == "claude" ? "Claude" : "Cursor";
-            color = p.Accent;
-        }
-        else if (engine == "openai" && !_host.Settings.Ai.OpenAiViaTunnel)
-        {
-            text = _host.Settings.Ai.OpenAiModel ?? "API";
-            color = p.Accent;
+            var server = _host.Server;
+            (color, live, tip) = server.State switch
+            {
+                ConnectionState.Connected => (p.Success, false, $"{provider.Name} · {server.StatusText}"),
+                ConnectionState.Connecting => (p.Warning, true, "Connecting…"),
+                ConnectionState.Error => (p.Error, false, server.StatusText),
+                ConnectionState.NotConfigured => (p.Text3, false, "Set up your server in Settings"),
+                _ => (p.Text3, false, $"{provider.Name} on {server.DisplayName}"),
+            };
         }
         else
         {
-            var server = _host.Server;
-            var name = engine == "hermes" ? "Hermes" : "AI";
-            (text, color, live) = server.State switch
-            {
-                ConnectionState.Connected => ($"{name} · {server.DisplayName}", p.Success, true),
-                ConnectionState.Connecting => ("Connecting…", p.Warning, false),
-                ConnectionState.Error => ($"{server.DisplayName} offline", p.Error, false),
-                ConnectionState.NotConfigured => ("Set up AI", p.Text3, false),
-                _ => ($"{name} · {server.DisplayName}", p.Text3, false),
-            };
-            ToolTipService.SetToolTip(_statusChip, server.StatusText);
+            var status = ProviderCatalog.Status(provider, settings);
+            (color, tip) = status.IsReady ? (p.Success, $"{provider.Name} · {provider.KindLabel}") : (p.Warning, $"{provider.Name}: {status.Text}");
         }
+        if (settings.Ai.Engine == "auto") tip += " · picked automatically";
         if (_agentCts is not null)
         {
             color = p.Accent;
             live = true;
         }
-        _statusText.Text = text;
         _statusDot.Set(color, live);
+        ToolTipService.SetToolTip(_modelChip, tip + "\nClick to choose another AI or model");
     }
 
     private void EnsureServerStatus()
@@ -898,10 +1132,11 @@ public sealed partial class PanelWindow : Window
         _updateBanner = null;
         _settingsBadge.Visibility = u.HasUpdate ? Visibility.Visible : Visibility.Collapsed;
 
-        var setup = AiEngineFactory.NeedsServer(AiEngineFactory.ResolveEngine(_host.Settings), _host.Settings.Ai) && !_host.Settings.Server.IsConfigured;
-        if (setup)
+        var provider = AiEngineFactory.ResolveProvider(_host.Settings);
+        var status = ProviderCatalog.Status(provider, _host.Settings);
+        if (!status.IsReady)
         {
-            _updateBanner = Banner("hub", "Connect your AI", "Pick your server or your Claude / Cursor subscription.", "Set up", () => OpenSettings("connection"), p.Accent);
+            _updateBanner = Banner("hub", "Connect your AI", $"{provider.Name}: {status.Text}. Or pick another provider.", "Set up", () => OpenSettings("ai"), p.Accent);
         }
         else if (u.HasUpdate && !_updateDismissed)
         {
@@ -932,7 +1167,7 @@ public sealed partial class PanelWindow : Window
         grid.Children.Add(Glyph.Make(icon, 20, tone));
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         texts.Children.Add(Ui.Text(title, 13, p.Text1, semibold: true, maxLines: 2));
-        if (message is not null) texts.Children.Add(Ui.Text(message, 12, p.Text2, maxLines: 2));
+        if (message is not null) texts.Children.Add(Ui.Text(message, 12, p.Text2, maxLines: 3));
         if (progress is { } pct) texts.Children.Add(new ProgressBar { Value = pct, Maximum = 100, Margin = new Thickness(0, 6, 0, 0), Foreground = p.Brush(tone) });
         Grid.SetColumn(texts, 1);
         grid.Children.Add(texts);
@@ -980,10 +1215,14 @@ public sealed partial class PanelWindow : Window
     {
         _noticeTimer.Stop();
         if (_noticeBanner is null) return;
-        _banners.Children.Remove(_noticeBanner);
+        var banner = _noticeBanner;
         _noticeBanner = null;
-        _banners.Margin = new Thickness(SurfacePadding, 0, SurfacePadding, _banners.Children.Count > 0 ? 8 : 0);
-        QueueResize();
+        Motion.FadeOut(banner, () =>
+        {
+            _banners.Children.Remove(banner);
+            _banners.Margin = new Thickness(SurfacePadding, 0, SurfacePadding, _banners.Children.Count > 0 ? 8 : 0);
+            QueueResize();
+        }, toY: -6);
     }
 
     private void OpenSettings(string? page)
@@ -1017,15 +1256,33 @@ public sealed partial class PanelWindow : Window
 
     private void Prompt_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key != VirtualKey.Enter) return;
-        e.Handled = true;
-        _ = SendAsync();
+        var history = _host.Settings.PromptHistory;
+        switch (e.Key)
+        {
+            case VirtualKey.Enter:
+                e.Handled = true;
+                _ = SendAsync();
+                break;
+            // Up / Down walk through earlier prompts (like a terminal)
+            case VirtualKey.Up when history.Count > 0 && (_prompt.Text.Length == 0 || _historyIndex >= 0):
+                e.Handled = true;
+                _historyIndex = Math.Min(_historyIndex + 1, history.Count - 1);
+                _prompt.Text = history[_historyIndex];
+                _prompt.SelectionStart = _prompt.Text.Length;
+                break;
+            case VirtualKey.Down when _historyIndex >= 0:
+                e.Handled = true;
+                _historyIndex--;
+                _prompt.Text = _historyIndex >= 0 ? history[_historyIndex] : "";
+                _prompt.SelectionStart = _prompt.Text.Length;
+                break;
+        }
     }
 
     private void ShowSuggestions(bool show)
     {
         if (_suggestions is null) return;
-        show &= _agentCts is null && _question is null && _prompt.Text.Length == 0;
+        show &= _agentCts is null && _question is null && _prompt.Text.Length == 0 && _editing is null;
         if (show && _suggestions.Children.Count == 0)
         {
             foreach (var (label, icon, prompt) in Suggestions())
@@ -1062,14 +1319,11 @@ public sealed partial class PanelWindow : Window
                 var res = main.ModesByResolution().Select(g => g.Key).Take(3).ToList();
                 if (res.Count >= 2)
                     list.Add(("Resolution switcher", "aspect_ratio", $"A widget to switch my {(main.IsInternal ? "laptop" : "main")} display between {res[0].Replace("x", " × ")} and {res[1].Replace("x", " × ")}"));
-                var rates = main.Modes.Where(m => m.Width == main.Current.Width && m.Height == main.Current.Height).Select(m => m.RefreshRate).Distinct().OrderDescending().ToList();
-                if (rates.Count >= 2 && rates.Contains(60))
-                    list.Add(("Refresh rate", "speed", $"Toggle my display between {rates[0]} Hz and 60 Hz"));
             }
         }
         catch { }
-        list.Add(("Media controls", "play_circle", "Media controls: previous, play/pause and next"));
-        if (_host.Settings.Server.IsConfigured) list.Add(("Server status", "dns", "Show my server's uptime, load and free disk space"));
+        list.Add(("VPN toggle", "vpn_lock", "A toggle for my VPN connection"));
+        if (_host.Settings.Server.IsConfigured) list.Add(("Restart a container", "deployed_code", "A button that restarts a Docker container on my server — ask me which one"));
         list.Add(("Night light", "nightlight", "A toggle for Windows night light"));
         list.Add(("Clean temp files", "cleaning_services", "A button that clears my temp folder and tells me how much space it freed"));
         return list.Take(5);
@@ -1081,7 +1335,9 @@ public sealed partial class PanelWindow : Window
         _editing = widget;
         _editingText.Text = $"Changing “{widget.Title}”";
         _editingChip.Visibility = Visibility.Visible;
+        Motion.Enter(_editingChip, 6);
         _prompt.PlaceholderText = "What should change?";
+        ShowSuggestions(false);
         ShowComposerState(ComposerState.Input);
         _prompt.Focus(FocusState.Programmatic);
         QueueResize();
@@ -1091,7 +1347,7 @@ public sealed partial class PanelWindow : Window
     {
         _editing = null;
         _editingChip.Visibility = Visibility.Collapsed;
-        _prompt.PlaceholderText = "Ask TileSmith to build a widget…";
+        _prompt.PlaceholderText = "Describe a widget to build…";
         QueueResize();
     }
 
@@ -1099,6 +1355,7 @@ public sealed partial class PanelWindow : Window
     {
         var text = _prompt.Text.Trim();
         if (text.Length == 0) return;
+        _historyIndex = -1;
         if (_question is not null)
         {
             _prompt.Text = "";
@@ -1106,17 +1363,22 @@ public sealed partial class PanelWindow : Window
             return;
         }
         if (_agentCts is not null) return;
+        RememberPrompt(text);
+        if (_gallery is not null) CloseGallery();
         await RunAgentAsync(text);
+    }
+
+    private void RememberPrompt(string text)
+    {
+        var history = _host.Settings.PromptHistory;
+        history.Remove(text);
+        history.Insert(0, text);
+        if (history.Count > 30) history.RemoveRange(30, history.Count - 30);
+        Core.Settings.SettingsStore.Save(_host.Settings);
     }
 
     private async Task RunAgentAsync(string request)
     {
-        var engine = AiEngineFactory.ResolveEngine(_host.Settings);
-        if (AiEngineFactory.NeedsServer(engine, _host.Settings.Ai) && !_host.Settings.Server.IsConfigured)
-        {
-            UpdateBanners();
-            return;
-        }
         IAiBackend backend;
         try
         {
@@ -1124,8 +1386,16 @@ public sealed partial class PanelWindow : Window
         }
         catch (Exception ex)
         {
-            ShowNotice(ex.Message, warning: true, "Settings", () => OpenSettings("connection"));
+            ShowNotice(ex.Message, warning: true, "Settings", () => OpenSettings("ai"));
             return;
+        }
+        if (backend is RoutedBackend routed)
+        {
+            routed.Switched += (from, to, reason) => DispatcherQueue.TryEnqueue(() =>
+            {
+                AddSay($"{from} couldn't be reached — switching to {to}.");
+                AddError(reason);
+            });
         }
 
         var editing = _editing;
@@ -1136,7 +1406,8 @@ public sealed partial class PanelWindow : Window
         _steps.Clear();
         _activityList.Children.Clear();
         _interaction.Children.Clear();
-        _activity.Visibility = Visibility.Collapsed;
+        _activity.Visibility = Visibility.Visible;
+        Motion.Enter(_activity, 10);
         _resultTimer.Stop();
         _statusLine.Text = editing is null ? "Thinking…" : $"Changing “{editing.Title}”…";
         ShowComposerState(ComposerState.Working);
@@ -1163,7 +1434,8 @@ public sealed partial class PanelWindow : Window
         try
         {
             var result = await agent.RunAsync(request, _sizePreference, editing, _agentCts.Token);
-            if (AiEngineFactory.NeedsServer(engine, _host.Settings.Ai)) _host.Server.MarkConnected();
+            var provider = backend is RoutedBackend r ? r.ProviderId : AiEngineFactory.ResolveEngine(_host.Settings);
+            if (AiEngineFactory.NeedsServer(provider, _host.Settings.Ai)) _host.Server.MarkConnected();
             title = result.SavedWidgets.Count switch
             {
                 0 => result.Message ?? "Done",
@@ -1174,7 +1446,7 @@ public sealed partial class PanelWindow : Window
             if (result.SavedWidgets.Count > 0 && !string.IsNullOrWhiteSpace(result.Message) && result.Message != title) AddSay(result.Message!);
             success = true;
             if (!_visible) Notifications.Show(title, "Open TileSmith to try it.");
-            Log.Info($"Agent finished in {result.Turns} turns / {result.Elapsed.TotalSeconds:0}s: {title}");
+            Log.Info($"Agent finished in {result.Turns} turns / {result.Elapsed.TotalSeconds:0}s with {backend.DisplayName}: {title}");
         }
         catch (OperationCanceledException)
         {
@@ -1185,35 +1457,22 @@ public sealed partial class PanelWindow : Window
             title = "Sign-in needed";
             AddError(ex.Message);
             AddActionChip("Sign in", "login", () => LocalCliBackend.StartLogin(ex.Cli));
-            if (_host.Settings.Server.IsConfigured && _host.Settings.Ai.DetectedEngine is { } serverEngine)
-            {
-                // a working engine on the server is one tap away
-                AddActionChip($"Use {(serverEngine == "hermes" ? "Hermes" : "your server")} instead", "dns", () =>
-                {
-                    _host.Settings.Ai.Engine = "auto";
-                    _host.SaveSettings();
-                    _prompt.Text = request;
-                    ShowComposerState(ComposerState.Input);
-                    _activity.Visibility = Visibility.Collapsed;
-                    _ = SendAsync();
-                });
-            }
-            _activity.Visibility = Visibility.Visible;
+            AddActionChip("Choose another AI", "swap_horiz", ShowModelPicker);
         }
         catch (Exception ex) when (ex is ServerException or HostKeyChangedException)
         {
             _host.Server.MarkFailed(ex.Message);
             title = "Couldn't reach your server";
             AddError(ex.Message);
-            AddActionChip("Open settings", "settings", () => OpenSettings("connection"));
-            _activity.Visibility = Visibility.Visible;
+            AddActionChip("Server settings", "dns", () => OpenSettings("server"));
+            AddActionChip("Choose another AI", "swap_horiz", ShowModelPicker);
         }
         catch (Exception ex)
         {
             Log.Error("Agent run failed", ex);
             title = "Couldn't finish that";
             AddError(ex.Message);
-            _activity.Visibility = Visibility.Visible;
+            if (ex is AiException { CanFallback: true }) AddActionChip("Choose another AI", "swap_horiz", ShowModelPicker);
         }
         finally
         {
@@ -1234,7 +1493,11 @@ public sealed partial class PanelWindow : Window
         _resultIcon.Foreground = p.Brush(success ? p.Success : p.Warning);
         _undoChip.Visibility = _undo.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         ShowComposerState(ComposerState.Result);
-        if (success) _resultTimer.Start();
+        if (success)
+        {
+            _resultTimer.Start();
+            _activity.Visibility = Visibility.Collapsed;
+        }
         QueueResize();
     }
 
@@ -1280,12 +1543,13 @@ public sealed partial class PanelWindow : Window
         var block = Ui.Text(text, 12, Palette.Current.Error, maxLines: 6);
         block.IsTextSelectionEnabled = true;
         block.IsHitTestVisible = true;
+        block.Margin = new Thickness(26, 0, 0, 0);
         AppendActivity(block);
     }
 
     private void AddActionChip(string text, string icon, Action action)
     {
-        var chip = new Chip(text, icon) { HorizontalAlignment = HorizontalAlignment.Left };
+        var chip = new Chip(text, icon) { HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(26, 0, 0, 0) };
         chip.Click += (_, _) => action();
         AppendActivity(chip);
     }
@@ -1296,6 +1560,7 @@ public sealed partial class PanelWindow : Window
         var row = new Grid { ColumnSpacing = 8, Background = new SolidColorBrush(Colors.Transparent) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         row.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var status = new Grid { Width = 18, Height = 16 };
@@ -1305,10 +1570,13 @@ public sealed partial class PanelWindow : Window
         status.Children.Add(spinner);
         status.Children.Add(icon);
         row.Children.Add(status);
-        var title = Ui.Text(step.Title, 12, p.Text2);
+        var title = Ui.TipWhenTrimmed(Ui.Text(step.Title, 12, p.Text2));
         title.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(title, 1);
         row.Children.Add(title);
+        var chevron = Glyph.Make("expand_more", 14, p.Text3);
+        Grid.SetColumn(chevron, 2);
+        row.Children.Add(chevron);
         var detail = new TextBlock
         {
             FontFamily = new FontFamily("Cascadia Mono, Consolas"),
@@ -1323,10 +1591,14 @@ public sealed partial class PanelWindow : Window
         };
         Grid.SetRow(detail, 1);
         Grid.SetColumn(detail, 1);
+        Grid.SetColumnSpan(detail, 2);
         row.Children.Add(detail);
         row.Tapped += (_, _) =>
         {
-            detail.Visibility = detail.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+            var open = detail.Visibility != Visibility.Visible;
+            detail.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+            chevron.Text = Icons.Glyph(open ? "expand_less" : "expand_more");
+            if (open) Motion.Enter(detail, 4, 0, Motion.Fast);
             QueueResize();
         };
         ToolTipService.SetToolTip(row, "Show details");
@@ -1347,12 +1619,15 @@ public sealed partial class PanelWindow : Window
             StepState.Failed => (Icons.Glyph("close"), p.Brush(p.Error)),
             _ => (Icons.Glyph("remove"), p.Brush(p.Text3)),
         };
+        Motion.CenterScale(row.Icon);
+        Motion.Pulse(row.Icon, 1.3f);
         row.Detail.Text = string.IsNullOrWhiteSpace(step.Detail) ? step.Output ?? "" : $"{step.Detail}\n\n→ {step.Output}";
     }
 
     private void AppendActivity(UIElement element)
     {
         _activityList.Children.Add(element);
+        Motion.Enter(element, 6, 0, Motion.Fast);
         QueueResize();
         DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
             () => _activityScroll.ChangeView(null, _activityScroll.ScrollableHeight, null, true));
@@ -1377,6 +1652,7 @@ public sealed partial class PanelWindow : Window
         _activity.Visibility = Visibility.Visible;
         ShowComposerState(ComposerState.Input);
         _prompt.PlaceholderText = "…or type your own answer";
+        _prompt.Focus(FocusState.Programmatic);
         if (!_visible) Notifications.Show("TileSmith has a question", question);
         QueueResize();
         return _question.Task;
@@ -1386,7 +1662,7 @@ public sealed partial class PanelWindow : Window
     {
         AddSay(answer, isUser: true);
         _interaction.Children.Clear();
-        _prompt.PlaceholderText = "Ask TileSmith to build a widget…";
+        _prompt.PlaceholderText = "Describe a widget to build…";
         ShowComposerState(ComposerState.Working);
         var tcs = _question;
         _question = null;
@@ -1416,17 +1692,17 @@ public sealed partial class PanelWindow : Window
             Padding = new Thickness(10, 8, 10, 8),
             Child = new ScrollViewer { Content = code, MaxHeight = 120, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
         });
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var row = new WrapPanel { HorizontalSpacing = 8, VerticalSpacing = 8 };
         var allow = new Chip("Allow", "check", filled: true);
         allow.Click += (_, _) => ResolveApproval(true);
-        var always = new Chip("Allow all");
+        var always = new Chip("Allow all", style: ChipStyle.Outline);
         always.Click += (_, _) =>
         {
             _host.Settings.Ai.Permission = "auto";
             _host.SaveSettings();
             ResolveApproval(true);
         };
-        var deny = new Chip("Deny", "block");
+        var deny = new Chip("Deny", "block", style: ChipStyle.Ghost);
         deny.Click += (_, _) => ResolveApproval(false);
         row.Children.Add(allow);
         row.Children.Add(always);
@@ -1470,7 +1746,7 @@ public sealed partial class PanelWindow : Window
                 panel._undo.Add(() => Host.RemoveWidget(widget.Id));
             }
             panel._board.HideGhost();
-            panel._celebrateId = widget.Id;
+            panel._celebrate.Add(widget.Id);
             var replaced = Host.UpsertWidget(widget);
             return Task.FromResult(replaced ? "updated on the panel" : "added to the panel");
         }

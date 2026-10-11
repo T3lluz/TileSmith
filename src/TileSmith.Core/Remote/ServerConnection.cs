@@ -242,10 +242,16 @@ public sealed class ServerConnection : IDisposable
     public Task<CommandResult> RunScriptAsync(string bashScript, TimeSpan timeout, CancellationToken ct)
     {
         // Wrap in a function so commands reading stdin can't swallow the rest of the script.
-        var wrapped = "__tilesmith_main() {\n" + bashScript + "\n}\n__tilesmith_main </dev/null\n";
+        var wrapped = "__tilesmith_main() {\n" + ToUnixLineEndings(bashScript) + "\n}\n__tilesmith_main </dev/null\n";
         var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(wrapped));
         return RunAsync($"printf '%s' '{b64}' | base64 -d | bash -l", timeout, ct);
     }
+
+    /// <summary>
+    /// Scripts written as C# raw strings inherit the source file's line endings (CRLF on Windows checkouts);
+    /// bash reads every "\r" as part of a word, so "do\r" and "{\r" become syntax errors.
+    /// </summary>
+    internal static string ToUnixLineEndings(string script) => script.Replace("\r\n", "\n").Replace('\r', '\n');
 
     /// <summary>Forwards a free local port to host:port as seen from the server. Returns the local port.</summary>
     public async Task<int> OpenTunnelAsync(string remoteHost, int remotePort, CancellationToken ct)

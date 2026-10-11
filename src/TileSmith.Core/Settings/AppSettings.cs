@@ -1,11 +1,15 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TileSmith.Core.Settings;
 
 public sealed class AppSettings
 {
+    /// <summary>Settings format. 2 = per-provider AI settings (0.2.0).</summary>
+    public int Version { get; set; }
+
     public ServerProfile Server { get; set; } = new();
     public AiSettings Ai { get; set; } = new();
 
@@ -34,6 +38,14 @@ public sealed class AppSettings
     public string? LastNotifiedVersion { get; set; }
 
     public bool FirstRunCompleted { get; set; }
+
+    /// <summary>Calmer motion: shorter, smaller animations and no tile cascade.</summary>
+    public bool ReduceMotion { get; set; }
+
+    /// <summary>Prompts sent from the panel, newest first (Up arrow in the composer recalls them).</summary>
+    public List<string> PromptHistory { get; set; } = [];
+
+    public const int CurrentVersion = 2;
 }
 
 public sealed class ServerProfile
@@ -56,12 +68,13 @@ public sealed class ServerProfile
 
 public sealed class AiSettings
 {
-    /// <summary>auto | hermes | openai | command</summary>
+    /// <summary>The chosen provider: auto, or an id from <c>ProviderCatalog</c> (claude, cursor, hermes, anthropic, openai…).</summary>
     public string Engine { get; set; } = "auto";
 
     public string HermesCommand { get; set; } = "hermes";
     public string? HermesArgs { get; set; }
 
+    /// <summary>The "Custom endpoint" provider (id "compatible"): any OpenAI-compatible API, optionally through SSH.</summary>
     public string OpenAiBaseUrl { get; set; } = "http://127.0.0.1:8642/v1";
     public bool OpenAiViaTunnel { get; set; } = true;
     public string? OpenAiModel { get; set; }
@@ -70,8 +83,45 @@ public sealed class AiSettings
     /// <summary>Custom CLI. "{file}" is replaced by the prompt file; otherwise the prompt is piped to stdin.</summary>
     public string? CustomCommand { get; set; }
 
-    /// <summary>Model for the Claude / Cursor CLIs (empty = the CLI's default).</summary>
+    /// <summary>Before 0.2: one model for the Claude / Cursor CLIs. Migrated into <see cref="Providers"/>.</summary>
     public string? LocalModel { get; set; }
+
+    /// <summary>Per-provider model, API key, address and effort, keyed by provider id.</summary>
+    public Dictionary<string, ProviderSettings> Providers { get; set; } = [];
+
+    /// <summary>When the chosen AI can't be reached (offline, signed out, rate limited), try the next ready one.</summary>
+    public bool AutoFallback { get; set; } = true;
+
+    /// <summary>Hermes's own default model and the OpenAI-compatible endpoint it uses (found by Detect).</summary>
+    public string? HermesDefaultModel { get; set; }
+    public string? HermesBaseUrl { get; set; }
+
+    /// <summary>"provider/model" pairs picked recently, newest first (shown at the top of the model picker).</summary>
+    public List<string> RecentModels { get; set; } = [];
+
+    public ProviderSettings For(string providerId)
+    {
+        if (!Providers.TryGetValue(providerId, out var p)) Providers[providerId] = p = new ProviderSettings();
+        return p;
+    }
+
+    public string? ModelFor(string providerId) => providerId switch
+    {
+        "compatible" => OpenAiModel,
+        _ => Providers.TryGetValue(providerId, out var p) ? p.Model : null,
+    };
+
+    public void SetModel(string providerId, string? model)
+    {
+        model = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+        if (providerId == "compatible") OpenAiModel = model;
+        else For(providerId).Model = model;
+        if (model is null) return;
+        var key = providerId + "/" + model;
+        RecentModels.Remove(key);
+        RecentModels.Insert(0, key);
+        if (RecentModels.Count > 6) RecentModels.RemoveRange(6, RecentModels.Count - 6);
+    }
 
     /// <summary>auto = run tools freely (admin still shows UAC); ask = confirm commands and file writes.</summary>
     public string Permission { get; set; } = "auto";
@@ -84,6 +134,25 @@ public sealed class AiSettings
     public string? DetectedSummary { get; set; }
     public string? HermesQuietFlag { get; set; }
     public bool HermesSupportsQueryFile { get; set; } = true;
+}
+
+public sealed class ProviderSettings
+{
+    /// <summary>Model id (empty = the provider's default).</summary>
+    public string? Model { get; set; }
+
+    /// <summary>DPAPI-protected API key.</summary>
+    public string? ProtectedKey { get; set; }
+
+    /// <summary>Overrides the provider's API address (local servers on another port, proxies).</summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>low | medium | high | xhigh | max — for providers that support it (Claude). Null = default.</summary>
+    public string? Effort { get; set; }
+
+    /// <summary>The decrypted key — never written to disk.</summary>
+    [JsonIgnore]
+    public string? ApiKey => Secrets.Unprotect(ProtectedKey);
 }
 
 /// <summary>Encrypts secrets with Windows DPAPI so they're only readable by this Windows account.</summary>
@@ -123,7 +192,7 @@ public static class SettingsStore
             if (File.Exists(AppPaths.SettingsFile))
             {
                 var json = File.ReadAllText(AppPaths.SettingsFile);
-                return JsonSerializer.Deserialize<AppSettings>(json, JsonDefaults.Options) ?? new AppSettings();
+                return Migrate(JsonSerializer.Deserialize<AppSettings>(json, JsonDefaults.Options) ?? new AppSettings());
             }
         }
         catch (Exception ex)
@@ -131,7 +200,27 @@ public static class SettingsStore
             Log.Error("Settings file is unreadable; starting with defaults", ex);
             try { File.Copy(AppPaths.SettingsFile, AppPaths.SettingsFile + ".bad", overwrite: true); } catch { }
         }
-        return new AppSettings();
+        return new AppSettings { Version = AppSettings.CurrentVersion };
+    }
+
+    /// <summary>Brings settings written by older versions up to date.</summary>
+    public static AppSettings Migrate(AppSettings settings)
+    {
+        if (settings.Version < 2)
+        {
+            var ai = settings.Ai;
+            // 0.1 called the OpenAI-compatible endpoint "openai"; that id now means api.openai.com
+            if (ai.Engine == "openai") ai.Engine = "compatible";
+            if (ai.DetectedEngine == "openai") ai.DetectedEngine = "compatible";
+            if (!string.IsNullOrWhiteSpace(ai.LocalModel))
+            {
+                ai.For("claude").Model ??= ai.LocalModel;
+                ai.For("cursor").Model ??= ai.LocalModel;
+                ai.LocalModel = null;
+            }
+            settings.Version = 2;
+        }
+        return settings;
     }
 
     public static void Save(AppSettings settings)
