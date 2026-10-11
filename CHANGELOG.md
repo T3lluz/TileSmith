@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1] - 2026-10-11
+
+- **Hermes in Docker**: TileSmith now finds Hermes Agent running in the official `nousresearch/hermes-agent` container and talks to it with `docker exec` — no setup needed.
+- The server's AI engines are re-checked every time TileSmith connects, so a moved or reinstalled Hermes keeps working.
+- If a Claude or Cursor sign-in fails, one tap switches to the AI on your server instead.
+- Long agent sessions stay within Linux's argument-size limits.
+- Settings and menus now use TileSmith's own colours and rounder shapes.
+- Development builds no longer register themselves to start with Windows.
+
 ## [0.1.0] - 2026-10-11
 
 First release.

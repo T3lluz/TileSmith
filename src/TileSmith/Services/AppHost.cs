@@ -16,6 +16,7 @@ public enum ConnectionState { NotConfigured, Idle, Connecting, Connected, Error 
 public sealed class ServerManager(AppHost host)
 {
     private ServerConnection? _connection;
+    private bool _detectedThisSession;
 
     public ConnectionState State { get; private set; } = host.Settings.Server.IsConfigured ? ConnectionState.Idle : ConnectionState.NotConfigured;
     public string StatusText { get; private set; } = host.Settings.Server.IsConfigured ? "Not connected yet" : "No server set up";
@@ -50,6 +51,7 @@ public sealed class ServerManager(AppHost host)
             await connection.ConnectAsync(ct);
             PendingHostKeyChange = null;
             Set(ConnectionState.Connected, $"Connected to {DisplayName}");
+            if (!_detectedThisSession) _ = RefreshDetectionAsync(connection);
             return true;
         }
         catch (HostKeyChangedException ex)
@@ -67,6 +69,29 @@ public sealed class ServerManager(AppHost host)
         {
             Set(ConnectionState.Idle, "Cancelled");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Once per session, re-checks which AI engines the server has (installs move: a stale native Hermes,
+    /// a new Docker container…) so the saved command keeps working without the user pressing Detect.
+    /// </summary>
+    private async Task RefreshDetectionAsync(ServerConnection connection)
+    {
+        _detectedThisSession = true;
+        try
+        {
+            var found = await EngineDetector.DetectAsync(connection, CancellationToken.None);
+            host.Dispatcher.TryEnqueue(() =>
+            {
+                EngineDetector.Apply(found, host.Settings.Ai);
+                host.SaveSettings();
+                Log.Info($"Engines on {DisplayName}: {found.Summary} (hermes: {found.HermesCommand ?? "none"})");
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Engine detection failed: {ex.Message}");
         }
     }
 

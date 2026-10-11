@@ -213,5 +213,6 @@ public sealed class OptionDefinition
     public string? Icon { get; set; }
     public JsonObject? Action { get; set; }
 
+    [JsonIgnore]
     public string EffectiveValue => string.IsNullOrWhiteSpace(Value) ? Label : Value!;
 }

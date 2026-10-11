@@ -7,6 +7,7 @@ namespace TileSmith.Core.Ai;
 public sealed record DetectedEngines(
     string? Os,
     string? HermesPath,
+    string? HermesCommand,
     string? HermesVersion,
     bool HermesQueryFile,
     string? HermesQuietFlag,
@@ -15,14 +16,18 @@ public sealed record DetectedEngines(
     IReadOnlyList<string> OllamaModels,
     IReadOnlyList<string> OtherClis)
 {
-    public string? Recommended => HermesPath is not null ? "hermes" : OllamaApi ? "openai" : null;
+    public string? Recommended => HermesCommand is not null ? "hermes" : OllamaApi ? "openai" : null;
 
     public string Summary
     {
         get
         {
             var parts = new List<string>();
-            if (HermesPath is not null) parts.Add($"Hermes Agent {HermesVersion}".Trim());
+            if (HermesCommand is not null)
+            {
+                var name = HermesVersion is { } v && v.StartsWith("Hermes", StringComparison.OrdinalIgnoreCase) ? v : $"Hermes Agent {HermesVersion}".Trim();
+                parts.Add(name + (HermesCommand.StartsWith("docker", StringComparison.Ordinal) ? " (Docker)" : ""));
+            }
             if (HermesApi) parts.Add("Hermes API server (:8642)");
             if (OllamaApi) parts.Add($"Ollama ({OllamaModels.Count} models)");
             parts.AddRange(OtherClis);
@@ -38,9 +43,18 @@ public static class EngineDetector
         echo "os=$(. /etc/os-release 2>/dev/null; echo "$PRETTY_NAME")"
         hp=$(command -v hermes 2>/dev/null)
         echo "hermes_path=$hp"
-        if [ -n "$hp" ]; then
-          echo "hermes_version=$(timeout 20 hermes --version 2>/dev/null | head -n1)"
-          echo "hermes_help=$(timeout 20 hermes chat --help 2>&1 | base64 -w0)"
+        hcmd=""
+        # a native install that actually starts (stale launchers from old installs are common)…
+        if [ -n "$hp" ] && timeout 20 hermes --version >/dev/null 2>&1; then hcmd="hermes"; fi
+        # …otherwise the official Docker image (nousresearch/hermes-agent)
+        if [ -z "$hcmd" ] && command -v docker >/dev/null 2>&1; then
+          dc=$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null | grep -i 'hermes-agent' | head -n1 | cut -d' ' -f1)
+          [ -n "$dc" ] && hcmd="docker exec -i $dc hermes"
+        fi
+        echo "hermes_cmd=$hcmd"
+        if [ -n "$hcmd" ]; then
+          echo "hermes_version=$(timeout 30 $hcmd --version 2>/dev/null | head -n1)"
+          echo "hermes_help=$(timeout 30 $hcmd chat --help 2>&1 | base64 -w0)"
         fi
         if command -v curl >/dev/null 2>&1; then
           curl -s -m 2 -o /dev/null -w "hermes_api=%{http_code}\n" http://127.0.0.1:8642/health
@@ -71,8 +85,8 @@ public static class EngineDetector
         }
 
         var help = Decode(Get("hermes_help"));
-        var quiet = help.Contains("--quiet", StringComparison.Ordinal) ? "--quiet" : help.Contains(" -Q", StringComparison.Ordinal) ? "-Q" : null;
-        var queryFile = help.Length == 0 || help.Contains("--query-file", StringComparison.Ordinal);
+        var quiet = help.Contains("-Q", StringComparison.Ordinal) ? "-Q" : help.Contains("--quiet", StringComparison.Ordinal) ? "--quiet" : null;
+        var queryFile = help.Contains("--query-file", StringComparison.Ordinal);
 
         var models = new List<string>();
         var tags = Decode(Get("ollama_tags"));
@@ -93,6 +107,7 @@ public static class EngineDetector
         return new DetectedEngines(
             Get("os"),
             Get("hermes_path"),
+            Get("hermes_cmd"),
             Get("hermes_version"),
             queryFile,
             quiet,
@@ -109,7 +124,9 @@ public static class EngineDetector
         ai.DetectedSummary = found.Summary;
         ai.HermesQuietFlag = found.HermesQuietFlag;
         ai.HermesSupportsQueryFile = found.HermesQueryFile;
-        if (found.HermesPath is not null && ai.HermesCommand is "hermes" or "") ai.HermesCommand = "hermes";
+        // keep a command the user typed themselves; otherwise use what actually works on the server
+        if (found.HermesCommand is not null && (string.IsNullOrWhiteSpace(ai.HermesCommand) || ai.HermesCommand == "hermes" || ai.HermesCommand.StartsWith("docker exec", StringComparison.Ordinal)))
+            ai.HermesCommand = found.HermesCommand;
         if (found.Recommended == "openai" && found.OllamaApi && ai.OpenAiBaseUrl.Contains(":8642", StringComparison.Ordinal))
         {
             ai.OpenAiBaseUrl = "http://127.0.0.1:11434/v1";

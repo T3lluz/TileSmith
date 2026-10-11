@@ -1185,6 +1185,19 @@ public sealed partial class PanelWindow : Window
             title = "Sign-in needed";
             AddError(ex.Message);
             AddActionChip("Sign in", "login", () => LocalCliBackend.StartLogin(ex.Cli));
+            if (_host.Settings.Server.IsConfigured && _host.Settings.Ai.DetectedEngine is { } serverEngine)
+            {
+                // a working engine on the server is one tap away
+                AddActionChip($"Use {(serverEngine == "hermes" ? "Hermes" : "your server")} instead", "dns", () =>
+                {
+                    _host.Settings.Ai.Engine = "auto";
+                    _host.SaveSettings();
+                    _prompt.Text = request;
+                    ShowComposerState(ComposerState.Input);
+                    _activity.Visibility = Visibility.Collapsed;
+                    _ = SendAsync();
+                });
+            }
             _activity.Visibility = Visibility.Visible;
         }
         catch (Exception ex) when (ex is ServerException or HostKeyChangedException)

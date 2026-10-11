@@ -29,7 +29,25 @@ public interface IAiBackend
 /// <summary>Renders a conversation as one prompt for stateless one-shot CLIs.</summary>
 public static class Transcript
 {
+    /// <summary>Keeps one-shot prompts under the 128 KB single-argument limit of Linux (`-q "…"`).</summary>
+    public const int MaxChars = 100_000;
+
     public static string Render(IReadOnlyList<AiMessage> messages)
+    {
+        var text = RenderCore(messages);
+        if (text.Length <= MaxChars) return text;
+        // shrink the oldest turns first; the latest results matter most
+        var shrunk = messages.ToList();
+        for (var i = 1; i < shrunk.Count - 2 && RenderCore(shrunk).Length > MaxChars; i++)
+        {
+            var m = shrunk[i];
+            if (m.Role != "system" && m.Content.Length > 1500) shrunk[i] = m with { Content = m.Content[..1500] + "\n…(older output trimmed)" };
+        }
+        text = RenderCore(shrunk);
+        return text.Length <= MaxChars ? text : text[..MaxChars];
+    }
+
+    private static string RenderCore(IReadOnlyList<AiMessage> messages)
     {
         var sb = new StringBuilder();
         var system = messages.Where(m => m.Role == "system").Select(m => m.Content);
