@@ -1,0 +1,86 @@
+name: Release
+
+# Push a tag like v1.2.3 (or run manually) to build, package with Velopack and publish a GitHub release.
+# Installed copies of TileSmith pick the new version up automatically (Settings › Updates).
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 1.2.3'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  VPK_VERSION: 1.2.161
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          $v = '${{ github.event.inputs.version }}'
+          if (-not $v) { $v = '${{ github.ref_name }}'.TrimStart('v') }
+          if ($v -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "Not a semantic version: $v" }
+          "value=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Test
+        run: dotnet test --project tests/TileSmith.Core.Tests -c Release
+
+      - name: Publish (self-contained, x64)
+        run: >
+          dotnet publish src/TileSmith/TileSmith.csproj -c Release -r win-x64 -p:Platform=x64
+          -p:Version=${{ steps.version.outputs.value }} -o artifacts/publish
+
+      - name: Release notes from CHANGELOG.md
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.value }}'
+          $lines = Get-Content CHANGELOG.md
+          $start = ($lines | Select-String -Pattern "^## \[?$([regex]::Escape($v))\]?" | Select-Object -First 1).LineNumber
+          if ($start) {
+            $rest = $lines[$start..($lines.Count - 1)]
+            $end = ($rest | Select-String -Pattern '^## ' | Select-Object -First 1).LineNumber
+            $notes = if ($end) { $rest[0..($end - 2)] } else { $rest }
+          } else {
+            $notes = @("TileSmith $v")
+          }
+          ($notes -join "`n").Trim() | Set-Content artifacts/notes.md -Encoding utf8
+          Get-Content artifacts/notes.md
+
+      - name: Package with Velopack and upload
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = '${{ steps.version.outputs.value }}'
+          $repo = 'https://github.com/${{ github.repository }}'
+          dotnet tool install -g vpk --version $env:VPK_VERSION
+          # previous release → delta packages (fails harmlessly on the very first release)
+          vpk download github --repoUrl $repo --token $env:GH_TOKEN -o artifacts/releases
+          if ($LASTEXITCODE -ne 0) { Write-Host "No previous release to diff against."; $global:LASTEXITCODE = 0 }
+          vpk pack --packId TileSmith --packVersion $v --packDir artifacts/publish --mainExe TileSmith.exe `
+            --packTitle TileSmith --packAuthors T3lluz --icon src/TileSmith/Assets/TileSmith.ico `
+            --releaseNotes artifacts/notes.md --shortcuts StartMenuRoot -o artifacts/releases
+          if ($LASTEXITCODE -ne 0) { throw "vpk pack failed" }
+          vpk upload github --repoUrl $repo --token $env:GH_TOKEN -o artifacts/releases `
+            --publish --releaseName "TileSmith $v" --tag "v$v"
+          if ($LASTEXITCODE -ne 0) { throw "vpk upload failed" }

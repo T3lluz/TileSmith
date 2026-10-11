@@ -1,0 +1,14 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>0.1.0</Version>
+    <Product>TileSmith</Product>
+    <Authors>T3lluz</Authors>
+    <Company>T3lluz</Company>
+    <Copyright>© 2026 T3lluz</Copyright>
+    <WindowsTargetFramework>net10.0-windows10.0.22621.0</WindowsTargetFramework>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+</Project>

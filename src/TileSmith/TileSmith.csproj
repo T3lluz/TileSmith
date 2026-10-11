@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>$(WindowsTargetFramework)</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <RootNamespace>TileSmith</RootNamespace>
+    <AssemblyName>TileSmith</AssemblyName>
+    <AssemblyTitle>TileSmith</AssemblyTitle>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\TileSmith.ico</ApplicationIcon>
+    <Platforms>x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(Platform)' == 'ARM64'">win-arm64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PublishTrimmed>false</PublishTrimmed>
+    <!-- The XAML compiler is limited to MAX_PATH; keep generated paths short (platform folder still separates x64/ARM64). -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
+    <PackageReference Include="Velopack" Version="1.2.161" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TileSmith.Core\TileSmith.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    The Windows App SDK metapackage brings the Windows AI / ML runtimes (onnxruntime, DirectML) and the
+    Widgets host. TileSmith uses none of them, so they're left out of the installer (~45 MB).
+  -->
+  <Target Name="TrimUnusedRuntimeFiles" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <_TileSmithUnused Include="@(ResolvedFileToPublish)"
+                        Condition="'%(Filename)' == 'onnxruntime' or '%(Filename)' == 'DirectML' or '%(Filename)' == 'Microsoft.DiaSymReader.Native.amd64' or '%(Filename)' == 'Microsoft.DiaSymReader.Native.arm64' or $([System.String]::Copy('%(Filename)').StartsWith('Microsoft.Windows.AI')) or $([System.String]::Copy('%(Filename)').StartsWith('Microsoft.Windows.Widgets')) or $([System.String]::Copy('%(Filename)').StartsWith('Microsoft.Graphics.Imaging'))" />
+      <ResolvedFileToPublish Remove="@(_TileSmithUnused)" />
+    </ItemGroup>
+  </Target>
+
+</Project>
