@@ -96,6 +96,38 @@ public class AgentLoopTests
     }
 
     [Fact]
+    public async Task Tries_the_widget_before_saving_and_sends_problems_back()
+    {
+        const string broken = """{"tool":"save_widget","args":{"widget":{"title":"Plex","size":"2x1","data":{"plex":{"type":"server.run","command":"plex"}},"layout":{"type":"column","children":[{"type":"text","text":"{plex.state}"},{"type":"text","text":"{plex.users} watching"}]}}}}""";
+        const string fixedWidget = """{"tool":"save_widget","args":{"widget":{"title":"Plex","size":"2x1","data":{"plex":{"type":"server.run","command":"plex"}},"layout":{"type":"column","children":[{"type":"text","text":"{plex.status}"},{"type":"text","text":"{plex.users} watching"}]}}}}""";
+        var backend = new ScriptedBackend(broken, fixedWidget);
+        var host = new FakeHost();
+        var engine = new ActionEngine(new TableActionHost(new() { ["plex"] = """{"status":"running","users":2}""" }));
+        var agent = new WidgetAgent(backend, engine, host, () => "");
+
+        var result = await agent.RunAsync("plex status", null, null, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Turns);
+        var feedback = backend.Seen[1].Last().Content;
+        Assert.Contains("not saved", feedback);
+        Assert.Contains("has no \"state\"", feedback);
+        Assert.Contains("2 watching", feedback); // the preview of what the tile would show
+        Assert.Equal("{plex.status}", Assert.Single(host.Widgets).Layout!["children"]![0]!["text"]!.ToString());
+    }
+
+    [Fact]
+    public async Task A_problem_reported_once_does_not_block_the_same_save_again()
+    {
+        const string save = """{"tool":"save_widget","args":{"widget":{"title":"NAS","controls":[{"type":"status","label":"Disk","state":{"type":"server.run","command":"offline-now"}}]}}}""";
+        var backend = new ScriptedBackend(save, save);
+        var host = new FakeHost();
+        var agent = new WidgetAgent(backend, new ActionEngine(new TableActionHost([])), host, () => "");
+        var result = await agent.RunAsync("nas disk", null, null, TestContext.Current.CancellationToken);
+        Assert.Equal(2, result.Turns);
+        Assert.Single(host.Widgets);
+    }
+
+    [Fact]
     public async Task Recovers_from_chatty_replies_and_gives_up_after_three()
     {
         var backend = new ScriptedBackend("Sure, I'd love to help!", "Here you go!", "Hmm.");

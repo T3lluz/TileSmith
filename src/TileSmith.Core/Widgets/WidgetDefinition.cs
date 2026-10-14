@@ -55,6 +55,7 @@ public static class WidgetSize
 
     private static CellSize Preferred(WidgetDefinition widget)
     {
+        if (widget.HasLayout) return new(2, 2);
         var controls = widget.Controls;
         if (controls.Count == 1)
         {
@@ -100,6 +101,21 @@ public sealed class WidgetDefinition
     public int? RefreshSeconds { get; set; }
     public List<ControlDefinition> Controls { get; set; } = [];
 
+    /// <summary>
+    /// Named live values for <see cref="Layout"/>: name → query action, or {"action": query, "every": seconds}.
+    /// Layout text and conditions read them as "{name}" or, for JSON output, "{name.field}".
+    /// </summary>
+    public JsonObject? Data { get; set; }
+
+    /// <summary>
+    /// A free-form tile: a tree of elements (rows, columns, text, icons, images, gauges, buttons…) styled with the
+    /// panel's tokens. When set it replaces the standard look built from <see cref="Controls"/>.
+    /// </summary>
+    public JsonObject? Layout { get; set; }
+
+    [JsonIgnore]
+    public bool HasLayout => Layout is not null;
+
     /// <summary>The request that produced this widget (kept so "edit with AI" has context).</summary>
     public string? Prompt { get; set; }
 
@@ -116,12 +132,12 @@ public sealed class WidgetDefinition
     /// <summary>All actions referenced by this widget, including state queries and nested sequence steps.</summary>
     public IEnumerable<JsonObject> AllActions()
     {
-        foreach (var c in Controls)
+        var own = Controls.SelectMany(c => c.OwnActions())
+            .Concat(WidgetLayout.DataSources(this).Select(d => d.Action))
+            .Concat(Layout is null ? [] : WidgetLayout.Walk(Layout).SelectMany(WidgetLayout.ActionsOf));
+        foreach (var a in own)
         {
-            foreach (var a in c.OwnActions())
-            {
-                foreach (var nested in Flatten(a)) yield return nested;
-            }
+            foreach (var nested in Flatten(a)) yield return nested;
         }
     }
 

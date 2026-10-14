@@ -96,6 +96,16 @@ public sealed class ActionEngine
             ["server.run"] = async (c, ct) => (await _host.RunOnServerAsync(c.Require("command"), TimeSpan.FromSeconds(c.GetInt("timeoutSeconds") ?? 30), ct)).Trim(),
             ["http.request"] = HttpRequestAsync,
 
+            ["system.stats"] = (c, _) => Value(() => SystemStats.Get(c.GetString("metric"), c.GetString("drive"))),
+            ["media.nowPlaying"] = async (c, _) => await NowPlaying.GetAsync(c.GetString("field")),
+            ["time.now"] = (c, _) => Value(() => Clock.Now(c.GetString("format"))),
+            ["time.until"] = (c, _) => Value(() => Clock.Until(c.Require("when"))),
+            ["network.ping"] = async (c, _) => await NetworkProbe.PingAsync(c.Require("host"), c.GetInt("timeoutMs") ?? 1500),
+            ["store.get"] = (c, _) => Value(() => LocalStore.Get(c.Require("key"), c.GetString("default"))),
+            ["store.set"] = (c, _) => Value(() => LocalStore.Set(c.Require("key"), c.GetString("value") ?? "")),
+            ["store.toggle"] = (c, _) => Value(() => LocalStore.Toggle(c.Require("key"))),
+            ["store.add"] = (c, _) => Value(() => LocalStore.Add(c.Require("key"), c.GetNumber("delta") ?? 1, c.GetNumber("min"), c.GetNumber("max"))),
+
             ["notify"] = (c, _) => Sync(() => _host.Notify(c.Require("title"), c.GetString("message"))),
             ["sequence"] = async (c, ct) =>
             {
@@ -121,7 +131,9 @@ public sealed class ActionEngine
             // keep the UI thread free: some APIs (WMI, display mode changes, powercfg) block
             var result = await Task.Run(() => _handlers[call.Type](call, ct), ct);
             if (!call.Info.IsQuery) Log.Info($"Action {call.Type} ok in {sw.ElapsedMilliseconds} ms");
-            return result?.Trim();
+            result = result?.Trim();
+            if (call.GetString("select") is { Length: > 0 } select && result is not null) result = Select(result, select, call.Type);
+            return result;
         }
         catch (ActionException)
         {
@@ -136,6 +148,21 @@ public sealed class ActionEngine
             Log.Error($"Action {call.Type} failed", ex);
             throw new ActionException($"{call.Info.Description.TrimEnd('.')} failed: {ex.Message}", ex);
         }
+    }
+
+    /// <summary>"select": pick one field out of JSON output ("cpu", "items[0].name").</summary>
+    internal static string Select(string output, string path, string type)
+    {
+        if (!TileSmith.Core.Widgets.JsonExtractorLite.TryParse(output, out var root))
+            throw new ActionException($"{type}: \"select\" needs JSON output, but got \"{(output.Length > 80 ? output[..80] + "…" : output)}\".");
+        var node = TileSmith.Core.Widgets.Bindings.Navigate(root, path)
+                   ?? throw new ActionException($"{type}: the output has no \"{path}\".");
+        return node.GetValueKind() switch
+        {
+            System.Text.Json.JsonValueKind.String => node.GetValue<string>(),
+            System.Text.Json.JsonValueKind.Null => "",
+            _ => node.ToJsonString(),
+        };
     }
 
     private static Task<string?> Sync(Action action)

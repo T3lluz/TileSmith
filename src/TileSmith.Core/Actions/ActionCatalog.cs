@@ -140,6 +140,35 @@ public static class ActionCatalog
              Opt("headers", ParamType.Object, "object of header name → value")],
             "response body (trimmed)", ActionTraits.Query | ActionTraits.Network),
 
+        // ── Live data (instant, no scripts: good for dashboards that refresh every few seconds) ─────
+        new("system.stats", "Live data", "CPU, memory, disk and uptime of this PC.",
+            [Opt("metric", ParamType.Enum, "one value; omit to get them all as JSON {cpu, memory, memoryUsed, memoryTotal, disk, diskFree, diskTotal, uptime}",
+                 "cpu", "memory", "memoryUsed", "memoryTotal", "disk", "diskFree", "diskTotal", "uptime", "processes"),
+             Opt("drive", ParamType.String, "drive for disk values, default the Windows drive, e.g. \"D\"")],
+            "cpu/memory/disk in percent (\"12.5\"), *Used/*Free/*Total in bytes, uptime in seconds", ActionTraits.Query),
+        new("media.nowPlaying", "Live data", "What's playing in any app that shows in Windows' media flyout (Spotify, browsers, players).",
+            [Opt("field", ParamType.Enum, "one value; omit to get JSON {title, artist, album, app, status, playing, art, position, duration}",
+                 "title", "artist", "album", "app", "status", "playing", "art", "position", "duration")],
+            "status is \"playing\", \"paused\" or \"none\"; art is a path to the cover image (use it as an image src); position/duration in seconds",
+            ActionTraits.Query),
+        new("time.now", "Live data", "The current date/time.", [Opt("format", ParamType.String, ".NET format, e.g. \"HH:mm\", \"dddd d MMMM\"; omit for ISO 8601")],
+            "the formatted time", ActionTraits.Query),
+        new("time.until", "Live data", "Seconds until a date/time (negative once it has passed) — countdowns; show with the |duration filter.",
+            [Req("when", ParamType.String, "\"2026-12-24\", \"2026-12-24T18:00\" or a time of day \"18:00\"")], "seconds", ActionTraits.Query),
+        new("network.ping", "Live data", "Ping a host.", [Req("host", ParamType.String, "host name or IP"), Opt("timeoutMs", ParamType.Int, "default 1500")],
+            "round-trip time in ms, or \"offline\"", ActionTraits.Query | ActionTraits.Network),
+
+        // ── Widget memory: values kept between runs (counters, checklists, a chosen mode) ─────────
+        new("store.get", "Memory", "Read a value TileSmith keeps for your widgets.",
+            [Req("key", ParamType.String, "name, e.g. \"water.glasses\""), Opt("default", ParamType.String, "value when it was never set")],
+            "the stored value", ActionTraits.Query),
+        new("store.set", "Memory", "Remember a value ({value} works for sliders and choices).",
+            [Req("key", ParamType.String, "name"), Req("value", ParamType.String, "value to keep")], "the new value"),
+        new("store.toggle", "Memory", "Flip a true/false value.", [Req("key", ParamType.String, "name")], "the new value"),
+        new("store.add", "Memory", "Add to a number (counters).",
+            [Req("key", ParamType.String, "name"), Req("delta", ParamType.Number, "e.g. 1 or -1"), Opt("min", ParamType.Number, "lowest allowed"), Opt("max", ParamType.Number, "highest allowed")],
+            "the new number"),
+
         // ── Flow ────────────────────────────────────────────────────────────
         new("notify", "Flow", "Show a Windows notification.",
             [Req("title", ParamType.String, "title"), Opt("message", ParamType.String, "body text")]),
@@ -193,6 +222,8 @@ public static class ActionCatalog
         foreach (var group in All.GroupBy(a => a.Category))
         {
             sb.Append("### ").AppendLine(group.Key);
+            if (group.Key == "Live data")
+                sb.AppendLine("Any query action also takes \"select\": a path into JSON output (\"cpu\", \"items[0].name\") that becomes its result.");
             foreach (var a in group)
             {
                 sb.Append("- ").Append(a.Type).Append(' ');

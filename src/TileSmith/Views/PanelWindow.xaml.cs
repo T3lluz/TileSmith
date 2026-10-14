@@ -1,5 +1,6 @@
 using System.Collections.Specialized;
 using System.Globalization;
+using System.Numerics;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -42,6 +43,7 @@ public sealed partial class PanelWindow : Window
     private readonly DispatcherTimer _resultTimer = new() { Interval = TimeSpan.FromSeconds(7) };
 
     // chrome
+    private Grid _motionHost = null!;
     private Grid _clipHost = null!;
     private Grid _surface = null!;
     private Grid _header = null!;
@@ -102,6 +104,9 @@ public sealed partial class PanelWindow : Window
     private int _historyIndex = -1;
     private Flyout? _modelFlyout;
     private double _lastSurfaceHeight;
+    private Vector2 _windowSizeDip;
+    private bool _opensFromBottom = true;
+    private bool _opensFromRight = true;
     private int _frameX, _frameY;
 
     public PanelWindow(AppHost host)
@@ -215,6 +220,10 @@ public sealed partial class PanelWindow : Window
         // rounded surface are truly transparent
         var margins = Solid ? new Native.MARGINS { Left = -1, Right = -1, Top = -1, Bottom = -1 } : new Native.MARGINS();
         Native.DwmExtendFrameIntoClientArea(_hwnd, ref margins);
+        // solid: TileSmith animates the panel and its shadow itself, so Windows' own show/hide fade would double it.
+        // glass: the blur is the window, so only Windows' fade can take it away smoothly
+        var noTransitions = Solid ? 1 : 0;
+        Native.DwmSetWindowAttribute(_hwnd, Native.DWMWA_TRANSITIONS_FORCEDISABLED, ref noTransitions, sizeof(int));
         SystemBackdrop = Solid ? new TransparentBackdrop() : new GlassBackdrop();
         _frameX = _frameY = 0;
     }
@@ -297,12 +306,16 @@ public sealed partial class PanelWindow : Window
         Grid.SetRow(ai, 3);
         _surface.Children.Add(ai);
 
-        // the clip host carries the grow animation; the surface keeps its own facade animations
+        // the motion host opens/closes the panel and holds the shadow too, so the shadow never stays behind; the clip
+        // host carries the grow animation; the surface keeps its own facade animations
         _clipHost = new Grid();
         var shadowHost = new Grid { IsHitTestVisible = false };
         _clipHost.Children.Add(shadowHost); // behind the surface: child visuals draw above their host's content
         _clipHost.Children.Add(_surface);
-        Root.Children.Add(_clipHost);
+        _motionHost = new Grid();
+        _motionHost.Children.Add(_clipHost);
+        Root.Children.Add(_motionHost);
+        if (!_visible) Motion.PanelHidden(_motionHost);
         if (Solid) Motion.AttachShadow(shadowHost, _surface, blur: 26, opacity: p.IsDark ? 0.55f : 0.22f, offsetY: 8, radius: 28);
 
         LoadTiles();
@@ -646,7 +659,7 @@ public sealed partial class PanelWindow : Window
                 var tile = new WidgetTile(widget, _host);
                 tile.Command += OnTileCommand;
                 tile.ResizeRequested += (t, size) => _host.ResizeWidget(t.Widget.Id, size.ToString());
-                tile.Failed += (t, message) => ShowNotice($"{t.Widget.Title}: {message}", warning: true);
+                tile.Failed += (t, message) => ShowNotice($"{t.Widget.Title}: {message}", warning: true, "Fix with AI", () => FixWithAi(t.Widget, message));
                 tiles.Add(tile);
                 if (_visible) { _ = tile.RefreshAsync(); tile.StartPolling(); }
                 if (_celebrate.Remove(widget.Id)) tile.Loaded += (_, _) => tile.Celebrate();
@@ -866,11 +879,12 @@ public sealed partial class PanelWindow : Window
         {
             _visible = true;
             _lastShown = DateTime.UtcNow;
+            // the first frame Windows composes must already be the start of the animation, not the last closed frame
+            Motion.PanelIn(_motionHost, _windowSizeDip, _opensFromBottom, _opensFromRight, fade: !Solid);
             _appWindow.Show(true);
             Activate();
             Native.ForceForeground(_hwnd);
             MeasureFrame();
-            Motion.PanelIn(_surface, fromBottom: true);
             // tiles cascade in from the corner the panel opens from
             var tiles = _board.Tiles.ToList();
             for (var i = 0; i < tiles.Count; i++)
@@ -885,7 +899,8 @@ public sealed partial class PanelWindow : Window
         }
         else
         {
-            Motion.PanelIn(_surface, fromBottom: true);
+            // clicked again while closing: turn around from wherever the close animation got to
+            Motion.PanelIn(_motionHost, _windowSizeDip, _opensFromBottom, _opensFromRight, fade: !Solid, fromCurrent: true);
             Activate();
             Native.ForceForeground(_hwnd);
         }
@@ -897,8 +912,14 @@ public sealed partial class PanelWindow : Window
     public void Hide()
     {
         if (!_visible || _hiding) return;
+        if (!Solid)
+        {
+            // glass: fading the content would leave the bare blur behind; Windows fades the whole window instead
+            HideNow();
+            return;
+        }
         _hiding = true;
-        Motion.PanelOut(_surface, () =>
+        Motion.PanelOut(_motionHost, _opensFromBottom, () =>
         {
             if (_hiding) HideNow();
         });
@@ -916,6 +937,7 @@ public sealed partial class PanelWindow : Window
         if (_gallery is not null) CloseGallery();
         _modelFlyout?.Hide();
         _appWindow.Hide();
+        Motion.PanelHidden(_motionHost);
     }
 
     private void OnActivated(object sender, WindowActivatedEventArgs args)
@@ -1022,10 +1044,14 @@ public sealed partial class PanelWindow : Window
         var y = work.Y + work.Height - height - gap;
         if (work.X > outer.X) x = work.X + gap;
         if (work.Y > outer.Y) y = work.Y + gap;
+        _opensFromRight = work.X <= outer.X;
+        _opensFromBottom = work.Y <= outer.Y;
+        _windowSizeDip = new Vector2((float)(surfaceWidth + 2 * m), (float)(surfaceHeight + 2 * m));
         _appWindow.MoveAndResize(new RectInt32(x, y, width, height));
 
-        // a taller panel slides open upward instead of jumping
-        if (_visible && _lastSurfaceHeight > 0 && surfaceHeight > _lastSurfaceHeight + 1)
+        // a taller panel slides open upward instead of jumping (not while it is still opening: one motion at a time)
+        var opening = (DateTime.UtcNow - _lastShown).TotalMilliseconds < 400;
+        if (_visible && !opening && _lastSurfaceHeight > 0 && surfaceHeight > _lastSurfaceHeight + 1)
             Motion.GrowFromBottom(_clipHost, (float)(surfaceHeight - _lastSurfaceHeight), _header, _banners);
         _lastSurfaceHeight = surfaceHeight;
     }
@@ -1341,6 +1367,15 @@ public sealed partial class PanelWindow : Window
         ShowComposerState(ComposerState.Input);
         _prompt.Focus(FocusState.Programmatic);
         QueueResize();
+    }
+
+    /// <summary>A tile failed when used: hand the agent the widget and the exact error so it can find the cause.</summary>
+    private void FixWithAi(WidgetDefinition widget, string error)
+    {
+        if (_agentCts is not null) return;
+        StartEditing(widget);
+        _ = RunAgentAsync($"This widget doesn't work. Using it fails with: \"{error}\". Find out why on this PC (test its actions), " +
+                          "fix it and keep everything else as it is.");
     }
 
     private void ClearEditing()

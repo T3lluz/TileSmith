@@ -126,6 +126,8 @@ public static class WidgetTemplates
             {"title":"Media","icon":"play_circle","size":"2x2","controls":[{"type":"button","label":"","icon":"skip_previous","action":{"type":"media.key","key":"previous"}},{"type":"button","label":"","icon":"play_pause","style":"accent","action":{"type":"media.key","key":"playPause"}},{"type":"button","label":"","icon":"skip_next","action":{"type":"media.key","key":"next"}}]}
             """);
 
+        Add("nowplaying", "Sound", "Now playing", "Cover art, title and controls for any player", Example("Now playing"));
+
         // ── Power ──────────────────────────────────────────────────────────────────────
         Add("powermode", "Power", "Power mode", "Efficiency, balanced or performance", """
             {"title":"Power mode","icon":"bolt","size":"4x1","controls":[{"type":"choice","state":{"type":"power.getMode"},"options":[{"label":"Efficiency","value":"efficiency","action":{"type":"power.setMode","mode":"efficiency"}},{"label":"Balanced","value":"balanced","action":{"type":"power.setMode","mode":"balanced"}},{"label":"Performance","value":"performance","action":{"type":"power.setMode","mode":"performance"}}]}]}
@@ -173,6 +175,8 @@ public static class WidgetTemplates
             """);
 
         // ── System info ────────────────────────────────────────────────────────────────
+        Add("dashboard", "System info", "System dashboard", "CPU, memory and disk gauges, live", Example("System dashboard"));
+        Add("cpu-graph", "System info", "CPU graph", "CPU load with a line of the last minute", Example("Live value with a history line"));
         Add("cpu", "System info", "CPU load", "Processor load, every 5 seconds", """
             {"title":"CPU","icon":"memory","size":"2x1","refreshSeconds":5,"controls":[{"type":"status","label":"CPU load","state":{"type":"shell.powershell","script":"[math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average)"},"format":"{value}%"}]}
             """);
@@ -198,6 +202,8 @@ public static class WidgetTemplates
         }
         return list;
     }
+
+    private static string Example(string name) => Ai.WidgetExamples.All.First(e => e.Name.StartsWith(name, StringComparison.Ordinal)).Json;
 
     private static bool Safe(Func<bool> check)
     {

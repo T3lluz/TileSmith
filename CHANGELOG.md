@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0] - 2026-10-14
+
+- **Smoother open and close**: the panel grows out of the tray corner on one eased curve, and its shadow moves and fades with it instead of staying behind. Reopening mid-close turns around smoothly, the first frame never flashes the old panel, and the glass style lets Windows fade the blur away with the window.
+- **Widgets with your own design**: the AI can now lay a tile out freely with rows, columns, text, icons, images, progress bars, gauges, history lines and buttons, styled with the panel's colours and type scale so it fits light and dark mode.
+- **Live data for widgets**: CPU, memory, disk and uptime, what's playing (with cover art), the time, countdowns, ping, and values a widget remembers (counters, checklists). One script can feed a whole card by printing JSON.
+- **Widgets that work the first time**: before saving, TileSmith runs the widget's queries and sends problems back to the AI, such as a toggle that can't tell on from off, a choice that never highlights, or a field that doesn't exist. The AI also starts from working examples close to your request.
+- **Fix with AI**: when a tile fails, the notice offers to have the AI find the cause and repair it.
+
 ## [0.2.1] - 2026-10-11
 
 - Projection gallery tile stays one full-width row. The laptop icon on "PC only" made that tile grow on PCs with an external display, which failed the 0.2.0 release tests.

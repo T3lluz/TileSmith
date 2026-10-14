@@ -50,15 +50,27 @@ public static class WidgetValidator
         if (w.RefreshSeconds is { } r && r is > 0 and < 2) w.RefreshSeconds = 2;
         if (w.RefreshSeconds is <= 0) w.RefreshSeconds = null;
 
-        if (w.Controls is null || w.Controls.Count == 0)
+        w.Controls ??= [];
+        if (w.HasLayout)
         {
-            errors.Add("\"controls\" must contain at least one control.");
-            w.Controls = [];
+            if (w.Layout!.Count == 0) errors.Add("\"layout\" is empty — give it a root element like {\"type\":\"column\",\"children\":[…]}.");
+            if (w.Controls.Count > 0)
+            {
+                warnings.Add("\"controls\" are ignored because the widget has a \"layout\" — put buttons/toggles inside the layout.");
+                w.Controls = [];
+            }
+            WidgetLayout.Validate(w, errors, warnings);
+        }
+        else if (w.Controls.Count == 0)
+        {
+            errors.Add("\"controls\" must contain at least one control (or give the widget a \"layout\").");
         }
         else if (w.Controls.Count > 6)
         {
             errors.Add("A widget can have at most 6 controls — split it into several widgets.");
         }
+
+        if (!w.HasLayout && w.Data is not null) warnings.Add("\"data\" is only used by layout widgets.");
 
         for (var i = 0; i < w.Controls.Count; i++)
         {
@@ -87,6 +99,12 @@ public static class WidgetValidator
     {
         var requested = WidgetSize.TryParse(w.Size, out var parsed) ? parsed : WidgetSize.Default(w);
         var minimum = TileLayout.Minimum(w);
+        if (minimum.H > WidgetSize.MaxHeight && w.HasLayout)
+        {
+            errors.Add($"This layout needs about {WidgetLayout.Estimate(w.Layout!).H + 2 * WidgetLayout.RootPadding:0} px of height, but a tile is at most " +
+                       $"{TileLayout.Height(WidgetSize.MaxHeight):0} px ({WidgetSize.MaxHeight} rows). Use fewer rows, smaller text, or put things side by side.");
+            return;
+        }
         if (minimum.H > WidgetSize.MaxHeight)
         {
             errors.Add($"These controls need about {TileLayout.CardHeight(w):0} px of height, but a tile is at most {WidgetSize.MaxHeight} rows " +
@@ -94,9 +112,11 @@ public static class WidgetValidator
             return;
         }
         var size = new CellSize(Math.Max(requested.W, minimum.W), Math.Max(requested.H, minimum.H));
+        if (size.W == 3) size = size with { W = 4 };
         if (size != requested && WidgetSize.TryParse(w.Size, out _))
             warnings.Add($"Size {requested} was too small for this content (it needs at least {minimum}) — saved as {size}.");
         w.Size = size.ToString();
+        if (w.HasLayout) return; // free layouts are measured as a whole (see WidgetLayout.Minimum)
 
         var single = TileLayout.IsSingle(w, size);
         var limit = TileLayout.LabelLimit(size, single);

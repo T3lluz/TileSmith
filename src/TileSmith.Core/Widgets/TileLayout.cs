@@ -55,7 +55,7 @@ public static class TileLayout
     /// <summary>Whether the widget is drawn as a single control filling the tile (not as a card).</summary>
     public static bool IsSingle(WidgetDefinition widget, CellSize size)
     {
-        if (widget.Controls.Count != 1) return false;
+        if (widget.HasLayout || widget.Controls.Count != 1) return false;
         var c = widget.Controls[0];
         return c.Type switch
         {
@@ -105,6 +105,7 @@ public static class TileLayout
     /// <summary>The smallest footprint the widget's content fits in.</summary>
     public static CellSize Minimum(WidgetDefinition widget)
     {
+        if (widget.HasLayout) return WidgetLayout.Minimum(widget);
         var controls = widget.Controls;
         if (controls.Count == 0) return new(1, 1);
         if (controls.Count == 1)

@@ -25,7 +25,7 @@ public enum TileCommand { EditWithAi, EditJson, Duplicate, Remove }
 /// <see cref="TileLayout"/>, the same numbers the validator and the AI work with, so content fits its tile.
 /// Runs the widget's actions and keeps each control in sync with its state query.
 /// </summary>
-public sealed class WidgetTile : Grid
+public sealed partial class WidgetTile : Grid
 {
     public const double Radius = 22;
 
@@ -124,6 +124,7 @@ public sealed class WidgetTile : Grid
 
     private UIElement Build()
     {
+        if (Widget.HasLayout) return LayoutTile();
         var single = L.IsSingle(Widget, Cells) ? Widget.Controls[0] : null;
         if (single is { Type: ControlType.Toggle or ControlType.Button })
             return Cells.W == 1 && Cells.H == 1 ? IconTile(single) : PillTile(single);
@@ -801,14 +802,18 @@ public sealed class WidgetTile : Grid
 
     public void StartPolling()
     {
-        if (Widget.RefreshSeconds is not { } seconds || _refreshers.Count == 0) return;
+        if (PollSeconds is not { } seconds || _refreshers.Count == 0) return;
         _poll ??= new DispatcherTimer { Interval = TimeSpan.FromSeconds(Math.Max(2, seconds)) };
         _poll.Tick -= OnPoll;
         _poll.Tick += OnPoll;
         _poll.Start();
     }
 
-    private void OnPoll(object? sender, object e) => _ = RefreshAsync();
+    private void OnPoll(object? sender, object e)
+    {
+        _pollTick = true;
+        _ = RefreshAsync();
+    }
 
     public void StopPolling()
     {

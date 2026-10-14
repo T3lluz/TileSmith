@@ -9,7 +9,7 @@ public static class AgentPrompt
 {
     public static string ToolsDir => Path.Combine(AppPaths.DataDir, "tools");
 
-    public static string System(string deviceContext, IReadOnlyList<WidgetDefinition> currentWidgets)
+    public static string System(string deviceContext, IReadOnlyList<WidgetDefinition> currentWidgets, string? request = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($$$"""
@@ -44,12 +44,24 @@ public static class AgentPrompt
             - finish {message} — end without saving (e.g. after removing/moving tiles, or if a request can't be a widget).
 
             # How to work
+            - First get the goal straight: what must happen when the user taps, and what must the tile show? Build exactly
+              that — every part of the request, nothing they didn't ask for. If an app, device, service or file is involved,
+              check it exists on this PC (a quick query) instead of assuming its name or path.
             - Be quick. Most widgets need 0–2 exploration steps: if the facts below already answer it, save right away.
             - Prefer built-in actions (instant and reliable) over scripts. Use shell.powershell only when no built-in fits.
+            - When you save, TileSmith runs every state/data query of the widget on this PC and checks that a toggle can tell
+              on from off, a slider gets a number, a choice's option values match, and every {placeholder} finds its field.
+              Problems come back as "not saved"; fix exactly those. Test a new script with test_action before you save.
+            - State queries must only READ (no side effects), finish within a second or two, and print one value — or
+              compact JSON (ConvertTo-Json -Compress) when a layout needs several values from one query.
               For anything longer than a one-liner, write a .ps1 into the tools folder with write_file, test it, and call it
               from the widget: {"type": "shell.powershell", "script": "& \"$env:APPDATA\\TileSmith\\tools\\name.ps1\" -Arg x"}
             - Check facts on this PC instead of guessing (paths, installed apps, devices). Never break things: no destructive
               commands unless the user explicitly asked for exactly that.
+            - Pick the form: a standard control (toggle, slider, choice, button, status) for a plain setting or action — they
+              look like Windows/Android quick settings and need no styling. A layout widget (see "Layout widgets") when the
+              tile should show richer information or a custom look: several values, gauges, history lines, cover art,
+              countdowns, counters, status colours, buttons arranged freely. When the user asks for a specific look, use a layout.
             - Choose the size yourself unless the user said one, using the exact sizes under "Tile sizes" below: one toggle or
               button → "2x1" (or "1x1" for a plain one-tap action), a slider → "4x1" (or "2x1" next to another), a choice → the
               narrowest one-row size its options fit in, several controls → a "2x2"/"4x2" card, "4x3" only when it really needs it.
@@ -65,7 +77,9 @@ public static class AgentPrompt
               "icon": string,             // Material Symbols name in snake_case: "wifi", "desktop_windows", "dark_mode"…
               "size": "1x1" | "2x1" | "4x1" | "2x2" | "4x2" | "2x3" | "4x3",   // grid cells (see Tile sizes; 4 = full width)
               "refreshSeconds": number?,  // optional: re-read state every N seconds while the panel is open
-              "controls": [ Control, ... ]  // 1–4, stacked vertically
+              "controls": [ Control, ... ], // 1–4, stacked vertically — or [] with a layout:
+              "data": { "name": Action }?, // layout widgets: live values (see "Layout widgets")
+              "layout": Element?           // layout widgets: your own design of the tile
             }
 
             Controls:
@@ -84,6 +98,7 @@ public static class AgentPrompt
             ## Built-in actions
             """);
         sb.AppendLine(ActionCatalog.DescribeForPrompt());
+        sb.AppendLine(WidgetLayout.DescribeForPrompt());
         sb.AppendLine("## Tile sizes — make everything fit");
         sb.AppendLine(TileLayout.DescribeForPrompt());
         sb.AppendLine();
@@ -92,12 +107,12 @@ public static class AgentPrompt
         sb.AppendLine("## Icons (Material Symbols — any name from fonts.google.com/icons works; common ones:)");
         sb.AppendLine(Icons.NamesForPrompt());
         sb.AppendLine();
-        sb.AppendLine("## Examples of widgets");
-        sb.AppendLine("""
-            {"title":"Dark mode","icon":"dark_mode","size":"2x1","controls":[{"type":"toggle","label":"Dark mode","state":{"type":"theme.get"},"onValue":"dark","on":{"type":"theme.set","mode":"dark"},"off":{"type":"theme.set","mode":"light"}}]}
-            {"title":"Power mode","icon":"bolt","size":"4x1","controls":[{"type":"choice","state":{"type":"power.getMode"},"options":[{"label":"Efficiency","value":"efficiency","action":{"type":"power.setMode","mode":"efficiency"}},{"label":"Balanced","value":"balanced","action":{"type":"power.setMode","mode":"balanced"}},{"label":"Performance","value":"performance","action":{"type":"power.setMode","mode":"performance"}}]}]}
-            {"title":"Volume","icon":"volume_up","size":"4x1","controls":[{"type":"slider","min":0,"max":100,"step":1,"state":{"type":"audio.getVolume"},"action":{"type":"audio.setVolume","level":"{value}"},"format":"{value}"}]}
-            """);
+        sb.AppendLine("## Working widgets close to this request (adapt them; don't copy names, hosts or dates that don't apply)");
+        foreach (var example in WidgetExamples.For(request))
+        {
+            sb.Append("### ").AppendLine(example.Name);
+            sb.AppendLine(Compact(example.Json));
+        }
         sb.AppendLine();
         sb.AppendLine("# This PC");
         sb.AppendLine(deviceContext);
@@ -107,9 +122,22 @@ public static class AgentPrompt
         for (var i = 0; i < currentWidgets.Count; i++)
         {
             var w = currentWidgets[i];
-            sb.AppendLine($"{i}. \"{w.Title}\" — id {w.Id}, {w.Size}, controls: {string.Join(", ", w.Controls.Select(c => c.Type))}");
+            var parts = w.HasLayout ? "layout" : "controls: " + string.Join(", ", w.Controls.Select(c => c.Type));
+            sb.AppendLine($"{i}. \"{w.Title}\" — id {w.Id}, {w.Size}, {parts}");
         }
         return sb.ToString();
+    }
+
+    private static string Compact(string json)
+    {
+        try
+        {
+            return global::System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: JsonDefaults.DocumentOptions)!.ToJsonString();
+        }
+        catch (global::System.Text.Json.JsonException)
+        {
+            return json.Trim();
+        }
     }
 
     public static string Task(string request, string? sizePreference, WidgetDefinition? editing)

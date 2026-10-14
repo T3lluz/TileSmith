@@ -57,14 +57,22 @@ public sealed class WidgetAgent(IAiBackend backend, ActionEngine actions, IAgent
     public int MaxTurns { get; init; } = 14;
     private const int MaxToolOutput = 6000;
 
+    /// <summary>Run the widget's queries before saving and send problems back (see <see cref="WidgetVerifier"/>).</summary>
+    public bool VerifyBeforeSave { get; init; } = true;
+
+    // problems already shown to the model: if it saves the same thing again it knows better (e.g. the server is
+    // offline right now), so the second time they don't block the save
+    private readonly HashSet<string> _reported = [];
+
     public async Task<AgentResult> RunAsync(string request, string? sizePreference, WidgetDefinition? editing, CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
+        _reported.Clear();
         host.OnStatus("Looking at your PC…");
         var context = await Task.Run(deviceContext, ct);
         var messages = new List<AiMessage>
         {
-            AiMessage.System(AgentPrompt.System(context, host.GetWidgets())),
+            AiMessage.System(AgentPrompt.System(context, host.GetWidgets(), request)),
             AiMessage.User(AgentPrompt.Task(request, sizePreference, editing)),
         };
 
@@ -244,14 +252,38 @@ public sealed class WidgetAgent(IAiBackend backend, ActionEngine actions, IAgent
                     return new Outcome($"error: the widget JSON doesn't match the schema ({ex.Message})");
                 }
                 var validation = WidgetValidator.Validate(widget);
-                var step = Start(call.Tool, $"Adding “{widget.Title}” to the panel", null);
                 if (!validation.IsValid)
-                    return Finish(step, "not saved, fix these problems:\n- " + string.Join("\n- ", validation.Errors), false);
+                {
+                    var invalid = Start(call.Tool, $"Checking “{widget.Title}”", null);
+                    return Finish(invalid, "not saved, fix these problems:\n- " + string.Join("\n- ", validation.Errors), false);
+                }
+
+                var notes = new List<string>(validation.Warnings);
+                var preview = "";
+                if (VerifyBeforeSave && widget.AllActions().Any())
+                {
+                    var check = Start("verify", $"Trying “{widget.Title}” on your PC", null);
+                    var verified = await WidgetVerifier.VerifyAsync(validation.Widget, actions, ct);
+                    preview = verified.Preview;
+                    var fresh = verified.Problems.Where(p => _reported.Add(p)).ToList();
+                    if (fresh.Count > 0)
+                    {
+                        var text = "not saved — TileSmith ran the widget's queries and found problems:\n- " + string.Join("\n- ", fresh) +
+                                   (preview.Length > 0 ? "\nWhat the tile would show now:\n" + preview : "") +
+                                   "\nFix them and save again. (If a problem is only temporary — e.g. the server is offline right now — save the same widget again and it will be accepted.)";
+                        return Finish(check, text, false);
+                    }
+                    notes.AddRange(verified.Notes);
+                    notes.AddRange(verified.Problems.Select(p => "Still: " + p));
+                    Finish(check, preview.Length > 0 ? preview : "ok", true);
+                }
+
+                var step = Start(call.Tool, $"Adding “{widget.Title}” to the panel", null);
                 var status = await host.SaveWidgetAsync(validation.Widget, ct);
                 saved.Add(validation.Widget);
-                var warnings = validation.Warnings.Count > 0 ? " Notes: " + string.Join(" ", validation.Warnings) : "";
+                var warnings = notes.Count > 0 ? " Notes: " + string.Join(" ", notes) : "";
                 var done = a["done"] is null || Bool(a, "done");
-                return Finish(step, $"{status} (id {validation.Widget.Id}).{warnings}", true, ends: done);
+                return Finish(step, $"{status} (id {validation.Widget.Id}).{warnings}" + (preview.Length > 0 ? "\nIt shows:\n" + preview : ""), true, ends: done);
             }
 
             case "remove_widget":

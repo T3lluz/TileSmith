@@ -64,6 +64,13 @@ media keys, shortcuts, apps, URLs, commands on your server and HTTP webhooks; an
 PowerShell script. The model never touches your PC directly: TileSmith runs the agent's tools locally and
 sends the results back.
 
+When the standard controls aren't enough, the agent designs the tile itself: a **layout** of rows, columns,
+text, icons, images, progress bars, rings, sparklines and buttons, fed by live **data** (CPU, memory, disk,
+what's playing with its cover art, countdowns, ping, values the widget remembers, or any script that prints
+JSON). Layouts follow the panel's styling rules, colour tokens and type scale, so they match light and dark
+mode and your accent colour. Before a widget is saved, TileSmith runs its queries and checks that the tile can
+actually read them, and if a tile fails later, **Fix with AI** hands the error straight back to the agent.
+
 ```
 src/TileSmith.Core   widget model & validator, actions (Win32 display/audio/power…), agent loop, AI backends, SSH
 src/TileSmith        WinUI 3 app: tray icon, panel, tiles, settings, Velopack updates

@@ -170,33 +170,85 @@ public static class Motion
         element.StartAnimation(Vector("Translation", null, Vector3.Zero, TimeSpan.FromMilliseconds(1)));
     }
 
-    /// <summary>The panel opening: springs up from 94% and rises, like an Android sheet.</summary>
-    public static void PanelIn(FrameworkElement element, bool fromBottom)
+    /// <summary>Material 3 "emphasized decelerate": things arriving on screen.</summary>
+    private static CubicBezierEasingFunction EnterEase(Compositor c) => c.CreateCubicBezierEasingFunction(new(0.05f, 0.7f), new(0.1f, 1f));
+
+    /// <summary>Material 3 "emphasized accelerate": things leaving the screen.</summary>
+    private static CubicBezierEasingFunction ExitEase(Compositor c) => c.CreateCubicBezierEasingFunction(new(0.3f, 0f), new(0.8f, 0.15f));
+
+    private static KeyFrameAnimation Keyframes(string target, object? from, object to, TimeSpan duration, CubicBezierEasingFunction ease)
     {
-        element.CenterPoint = new Vector3((float)element.ActualWidth * 0.75f, fromBottom ? (float)element.ActualHeight : 0, 0);
-        element.StartAnimation(Spring("Scale", new Vector3(Reduced ? 0.98f : 0.94f, Reduced ? 0.98f : 0.94f, 1), Vector3.One, 0.78f, 58));
-        element.StartAnimation(Scalar("Opacity", 0f, 1f, TimeSpan.FromMilliseconds(Reduced ? 120 : 180)));
-        element.StartAnimation(Spring("Translation", new Vector3(0, Distance(fromBottom ? 28 : -28), 0), Vector3.Zero, 0.8f, 60));
+        var c = Compositor;
+        switch (to)
+        {
+            case float t:
+                var s = c.CreateScalarKeyFrameAnimation();
+                s.Target = target;
+                if (from is float f) s.InsertKeyFrame(0f, f);
+                s.InsertKeyFrame(1f, t, ease);
+                s.Duration = duration;
+                return s;
+            default:
+                var v = c.CreateVector3KeyFrameAnimation();
+                v.Target = target;
+                if (from is Vector3 fv) v.InsertKeyFrame(0f, fv);
+                v.InsertKeyFrame(1f, (Vector3)to, ease);
+                v.Duration = duration;
+                return v;
+        }
     }
 
-    /// <summary>Quick fade/shrink out, then <paramref name="completed"/>.</summary>
-    public static void PanelOut(UIElement element, Action completed)
+    /// <summary>
+    /// The panel opening: it grows out of the corner it opens from (the tray) and rises a little, on one curve with no
+    /// overshoot. <paramref name="element"/> must hold the surface AND its shadow so both move as one. Starts from the
+    /// hidden state unless <paramref name="fromCurrent"/> (re-opened while it was still closing).
+    /// </summary>
+    public static void PanelIn(UIElement element, Vector2 size, bool fromBottom, bool fromRight, bool fade = false, bool fromCurrent = false)
     {
-        var duration = TimeSpan.FromMilliseconds(Reduced ? 80 : 120);
-        element.StartAnimation(Scalar("Opacity", null, 0f, duration));
-        element.StartAnimation(Vector("Scale", null, new Vector3(0.97f, 0.97f, 1), duration));
-        element.StartAnimation(Vector("Translation", null, new Vector3(0, Distance(10), 0), duration));
-        var timer = new DispatcherTimer { Interval = duration + TimeSpan.FromMilliseconds(15) };
+        var c = Compositor;
+        var ease = EnterEase(c);
+        var duration = TimeSpan.FromMilliseconds(Reduced ? 160 : 320);
+        var fadeDuration = TimeSpan.FromMilliseconds(Reduced ? 100 : 150);
+        element.CenterPoint = new Vector3(fromRight ? size.X : 0, fromBottom ? size.Y : 0, 0);
+        element.StartAnimation(Keyframes("Opacity", fromCurrent ? null : 0f, 1f, fadeDuration, ease));
+        if (fade)
+        {
+            // glass: the blur belongs to the window and can't move, so the content only fades in on it
+            element.StartAnimation(Keyframes("Scale", null, Vector3.One, TimeSpan.FromMilliseconds(1), ease));
+            element.StartAnimation(Keyframes("Translation", null, Vector3.Zero, TimeSpan.FromMilliseconds(1), ease));
+            return;
+        }
+        var startScale = Reduced ? 0.985f : 0.95f;
+        element.StartAnimation(Keyframes("Scale", fromCurrent ? null : new Vector3(startScale, startScale, 1), Vector3.One, duration, ease));
+        element.StartAnimation(Keyframes("Translation", fromCurrent ? null : new Vector3(0, Distance(fromBottom ? 14 : -14), 0), Vector3.Zero, duration, ease));
+    }
+
+    /// <summary>
+    /// Quick fade/shrink back towards the corner, then <paramref name="completed"/> (which hides the window). The element
+    /// stays invisible afterwards: <see cref="PanelIn"/> brings it back, so a re-shown window never flashes the old frame.
+    /// </summary>
+    public static void PanelOut(UIElement element, bool fromBottom, Action completed)
+    {
+        var c = Compositor;
+        var ease = ExitEase(c);
+        var duration = TimeSpan.FromMilliseconds(Reduced ? 90 : 150);
+        element.StartAnimation(Keyframes("Opacity", null, 0f, duration, ease));
+        element.StartAnimation(Keyframes("Scale", null, new Vector3(0.97f, 0.97f, 1), duration, ease));
+        element.StartAnimation(Keyframes("Translation", null, new Vector3(0, Distance(fromBottom ? 8 : -8), 0), duration, ease));
+        var timer = new DispatcherTimer { Interval = duration + TimeSpan.FromMilliseconds(20) };
         timer.Tick += (_, _) =>
         {
             timer.Stop();
             completed();
-            // reset so the next open starts clean
-            element.StartAnimation(Scalar("Opacity", null, 1f, TimeSpan.FromMilliseconds(1)));
-            element.StartAnimation(Vector("Scale", null, Vector3.One, TimeSpan.FromMilliseconds(1)));
-            element.StartAnimation(Vector("Translation", null, Vector3.Zero, TimeSpan.FromMilliseconds(1)));
         };
         timer.Start();
+    }
+
+    /// <summary>Puts the panel in its hidden pose at once (it was hidden without <see cref="PanelOut"/>).</summary>
+    public static void PanelHidden(UIElement element)
+    {
+        var c = Compositor;
+        element.StartAnimation(Keyframes("Opacity", null, 0f, TimeSpan.FromMilliseconds(1), ExitEase(c)));
     }
 
     /// <summary>

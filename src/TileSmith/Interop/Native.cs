@@ -46,6 +46,7 @@ internal static class Native
     public const int MOD_WIN = 0x8;
     public const int MOD_NOREPEAT = 0x4000;
 
+    public const int DWMWA_TRANSITIONS_FORCEDISABLED = 3;
     public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
     public const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
     public const int DWMWA_BORDER_COLOR = 34;

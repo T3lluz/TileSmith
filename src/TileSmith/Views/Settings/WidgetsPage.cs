@@ -59,7 +59,7 @@ public sealed class WidgetsPage : SettingsPage
             if (actions.Any(a => a.Traits.HasFlag(ActionTraits.Server))) traits.Add("uses your server");
             if (actions.Any(a => a.Traits.HasFlag(ActionTraits.Network))) traits.Add("uses the internet");
             var size = widget.Cells;
-            var description = $"{size.W} × {size.H} {WidgetTile.SizeName(size).ToLowerInvariant()} · {widget.Controls.Count} control{(widget.Controls.Count == 1 ? "" : "s")}";
+            var description = $"{size.W} × {size.H} {WidgetTile.SizeName(size).ToLowerInvariant()} · {(widget.HasLayout ? "custom layout" : $"{widget.Controls.Count} control{(widget.Controls.Count == 1 ? "" : "s")}")}";
             if (traits.Count > 0) description += " · " + string.Join(", ", traits);
             var id = widget.Id;
             var remove = new IconButton("delete", "Remove", 34, 18);
