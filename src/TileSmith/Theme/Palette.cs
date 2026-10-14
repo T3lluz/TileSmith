@@ -6,14 +6,18 @@ using Windows.UI.ViewManagement;
 namespace TileSmith.Theme;
 
 /// <summary>
-/// Colour tokens. Dark follows DailyDash's "Cursor dark" scheme (canvas #181818, cards #1F1F1F,
-/// steel-blue accent), light follows Cinema-Info's warm paper palette. Text steps clear WCAG AA.
+/// Colour tokens. Solid: dark follows DailyDash's "Cursor dark" scheme (canvas #181818, cards #1F1F1F), light
+/// follows Cinema-Info's warm paper palette. Liquid Glass: see-through fills over the blurred wallpaper with Apple's
+/// system colours, so tiles read as glass in both themes. Text steps clear WCAG AA on their usual backgrounds.
 /// </summary>
 public sealed class Palette
 {
     private readonly Dictionary<Color, SolidColorBrush> _brushes = [];
 
     public required bool IsDark { get; init; }
+
+    /// <summary>Liquid Glass: fills are translucent and surfaces get specular rims (see <see cref="Glass"/>).</summary>
+    public bool IsGlass { get; init; }
     public required Color Canvas { get; init; }
     public required Color Tile { get; init; }
     public required Color TileHover { get; init; }
@@ -45,11 +49,73 @@ public sealed class Palette
 
     public static Palette Current { get; private set; } = Dark(Parse("#81A1C1"));
 
-    public static void Apply(bool dark, string accentSetting)
+    public static void Apply(bool dark, string accentSetting, bool glass = false) => Current = For(dark, accentSetting, glass);
+
+    /// <summary>The palette for a theme, accent and style, without making it current.</summary>
+    public static Palette For(bool dark, string accentSetting, bool glass)
     {
         var accent = ResolveAccent(accentSetting, dark);
-        Current = dark ? Dark(accent) : Light(accent);
+        return glass ? (dark ? GlassDark(accent) : GlassLight(accent)) : dark ? Dark(accent) : Light(accent);
     }
+
+    /// <summary>Builds something with another palette (e.g. a glass preview inside an opaque window), then restores.</summary>
+    public static IDisposable Use(Palette palette)
+    {
+        var previous = Current;
+        Current = palette;
+        return new Restore(previous);
+    }
+
+    private sealed class Restore(Palette previous) : IDisposable
+    {
+        public void Dispose() => Current = previous;
+    }
+
+    public static Palette GlassDark(Color accent) => new()
+    {
+        IsDark = true,
+        IsGlass = true,
+        Canvas = Parse("#1C1C1E"),
+        Tile = Color.FromArgb(34, 255, 255, 255),
+        TileHover = Color.FromArgb(46, 255, 255, 255),
+        Card = Color.FromArgb(24, 255, 255, 255),
+        Chrome = Color.FromArgb(70, 0, 0, 0),
+        Well = Color.FromArgb(64, 0, 0, 0),
+        Hairline = WithAlpha(Colors.White, 0.12),
+        HairlineStrong = WithAlpha(Colors.White, 0.22),
+        Text1 = Parse("#F5F5F7"),
+        Text2 = Parse("#C7C7CC"),
+        Text3 = Parse("#98989F"),
+        Placeholder = Parse("#8E8E93"),
+        Accent = accent,
+        OnAccent = ContentOn(accent),
+        Success = Parse("#30D158"),
+        Error = Parse("#FF453A"),
+        Warning = Parse("#FFD60A"),
+    };
+
+    public static Palette GlassLight(Color accent) => new()
+    {
+        IsDark = false,
+        IsGlass = true,
+        Canvas = Parse("#F2F2F7"),
+        Tile = Color.FromArgb(150, 255, 255, 255),
+        TileHover = Color.FromArgb(185, 255, 255, 255),
+        Card = Color.FromArgb(120, 255, 255, 255),
+        Chrome = Color.FromArgb(140, 255, 255, 255),
+        Well = Color.FromArgb(18, 0, 0, 0),
+        Hairline = Color.FromArgb(24, 0, 0, 0),
+        HairlineStrong = Color.FromArgb(40, 0, 0, 0),
+        Text1 = Parse("#1C1C1E"),
+        Text2 = Parse("#48484D"),
+        Text3 = Parse("#6E6E73"),
+        Placeholder = Parse("#8A8A8E"),
+        Accent = accent,
+        OnAccent = ContentOn(accent),
+        Success = Parse("#248A3D"),
+        Error = Parse("#D70015"),
+        Warning = Parse("#B25000"),
+    };
 
     public static Palette Dark(Color accent) => new()
     {

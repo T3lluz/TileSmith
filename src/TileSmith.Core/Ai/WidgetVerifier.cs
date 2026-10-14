@@ -64,11 +64,27 @@ public static class WidgetVerifier
             {
                 if (byAction[s.Action].Output is { } output) data.Set(s.Name, output);
             }
+            // lists: the items must be an array, and the first item is checked like any other element
+            var elements = new List<JsonObject>();
             foreach (var el in WidgetLayout.Walk(widget.Layout))
             {
+                elements.Add(el);
+                if (WidgetLayout.TypeOf(el) != "list" || WidgetLayout.ListPath(el) is not { } listPath || el["template"] is not JsonObject template) continue;
+                var (listSource, _) = Bindings.SplitPath(listPath);
+                if (!data.Has(listSource)) continue;
+                var length = data.Length(listPath);
+                if (length is null)
+                    problems.Add($"list.items \"{{{listPath}}}\" isn't a JSON array (got {Quote(data.Resolve(listPath) ?? data.Resolve(listSource) ?? "")}). Make the query print an array, e.g. ConvertTo-Json -Compress -InputObject @($items).");
+                else if (length > 0)
+                    elements.AddRange(WidgetLayout.Walk(WidgetLayout.Instantiate(template, listPath, 0)));
+                else
+                    notes.Add($"list \"{{{listPath}}}\" is empty right now, so it shows nothing.");
+            }
+            foreach (var el in elements)
+            {
                 var type = WidgetLayout.TypeOf(el);
-                if (el["state"] is JsonObject st && type is "toggle" or "slider" or "choice")
-                    CheckControl(ToControl(el, type), byAction[st].Output, problems, notes, preview);
+                if (el["state"] is JsonObject st && type is "toggle" or "slider" or "choice" && byAction.TryGetValue(st, out var stateResult))
+                    CheckControl(ToControl(el, type), stateResult.Output, problems, notes, preview);
                 foreach (var key in new[] { "text", "icon", "src", "value", "label", "visible" })
                 {
                     foreach (var template in WidgetLayout.Branches(el[key]))
@@ -76,7 +92,7 @@ public static class WidgetVerifier
                         foreach (var path in Bindings.PathsIn(template))
                         {
                             var (name, _) = Bindings.SplitPath(path);
-                            if (!data.Has(name) || data.Resolve(path) is not null) continue;
+                            if (name is "item" or "index" || !data.Has(name) || data.Resolve(path) is not null) continue;
                             var raw = data.Resolve(name) ?? "";
                             problems.Add($"\"{{{path}}}\" ({type}.{key}) shows nothing: data \"{name}\" printed {Quote(raw)}, which has no \"{path[name.Length..].TrimStart('.')}\". " +
                                          "Make the query print JSON with that field, or read the field it does have.");
@@ -189,7 +205,7 @@ public static class WidgetVerifier
         timeout.CancelAfter(QueryTimeout);
         try
         {
-            return (await actions.RunAsync(action, null, timeout.Token) ?? "", null);
+            return (await actions.QueryAsync(action, timeout.Token) ?? "", null);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

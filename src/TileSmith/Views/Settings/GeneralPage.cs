@@ -17,12 +17,17 @@ public sealed class GeneralPage : SettingsPage
     {
         Section("Startup", null,
             Kit.Row("power_settings_new", "Start with Windows", "TileSmith waits quietly next to the clock until you need it.",
-                Kit.Toggle(StartupManager.IsEnabled(), on =>
+                Kit.Toggle(S.LaunchAtStartup, on =>
                 {
                     S.LaunchAtStartup = on;
-                    StartupManager.Apply(on);
+                    StartupManager.Apply(on, S.RunAsAdmin);
                     Save();
                 })),
+            Kit.Row("admin_panel_settings", "Run as administrator",
+                (Core.Native.Elevation.IsElevated ? "On now. " : "") +
+                "Widgets and the AI can change system settings without a Windows prompt each time; Windows asks once when TileSmith starts. " +
+                "The AI's scripts then run as administrator too — set “What the agent may do” to “Ask first” to approve each one.",
+                Core.Native.Elevation.CanElevate ? AdminToggle() : (UIElement)Kit.Badge("Needs an administrator account", Palette.Current.Text3, "lock")),
             Kit.Row("keep", "Always show the icon next to the clock", "Otherwise Windows may tuck it away in the hidden icons (^) menu.",
                 Kit.Toggle(S.KeepIconVisible, on =>
                 {
@@ -67,6 +72,34 @@ public sealed class GeneralPage : SettingsPage
                     Save();
                     Window.Go("general");
                 })));
+    }
+
+    private PillSwitch AdminToggle()
+    {
+        PillSwitch? toggle = null;
+        toggle = Kit.Toggle(S.RunAsAdmin, on =>
+        {
+            S.RunAsAdmin = on;
+            Save();
+            if (on && !Core.Native.Elevation.IsElevated)
+            {
+                if (App.Current.RestartElevated()) return;
+                // declined at the prompt: nothing changes
+                S.RunAsAdmin = false;
+                Save();
+                toggle!.IsOn = false;
+            }
+            else if (!on && Core.Native.Elevation.IsElevated)
+            {
+                StartupManager.Apply(S.LaunchAtStartup, admin: false);
+                App.Current.RestartAsUser();
+            }
+            else
+            {
+                StartupManager.Apply(S.LaunchAtStartup, on);
+            }
+        });
+        return toggle;
     }
 
     private void CheckHotkey() =>

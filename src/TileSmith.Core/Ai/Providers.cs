@@ -27,6 +27,25 @@ public enum ApiStyle { None, OpenAi, Anthropic }
 public sealed record ModelInfo(string Id, string Name, string? Detail = null)
 {
     public static ModelInfo Default(string note = "Provider default") => new("", "Default", note);
+
+    /// <summary>Costs nothing to use (OpenCode's free models, free OpenRouter models…).</summary>
+    public bool Free { get; init; }
+
+    /// <summary>Thinks before answering.</summary>
+    public bool Reasoning { get; init; }
+
+    /// <summary>Release date as yyyy-MM-dd, when known.</summary>
+    public string? Released { get; init; }
+
+    public long? Context { get; init; }
+
+    /// <summary>Logo of the model's maker (Assets/Brands/{Brand}.svg).</summary>
+    public string? Brand { get; init; }
+
+    /// <summary>Released in the last two months.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsNew => DateTime.TryParse(Released, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d)
+                         && (DateTime.Today - d).TotalDays is >= 0 and <= 60;
 }
 
 /// <summary>Everything the UI and the router need to know about one provider.</summary>
@@ -48,7 +67,7 @@ public sealed record ProviderInfo(
 {
     public bool NeedsKey => Kind == ProviderKind.Cloud;
 
-    public string KindLabel => Kind switch
+    public string KindLabel => Id == "opencode" ? "Free models" : Kind switch
     {
         ProviderKind.Subscription => "Your subscription",
         ProviderKind.Server => "On your server",
@@ -81,6 +100,9 @@ public static class ProviderCatalog
             SupportsEffort: true),
         new("cursor", "Cursor", ProviderKind.Subscription, "Your Cursor plan, through the Cursor Agent CLI", "Cu", "#B9BEC7",
             Suggested: [ModelInfo.Default("Cursor's Auto"), new("auto", "Auto", "Cursor picks")]),
+        new("opencode", "OpenCode", ProviderKind.Subscription, "Free models (and OpenCode Zen) through the OpenCode app, on this PC or your server", "Oc", "#F5F5F5",
+            DefaultModel: "big-pickle",
+            Suggested: [new ModelInfo("big-pickle", "Big Pickle", "Free") { Free = true, Brand = "opencode" }]),
         new("hermes", "Hermes Agent", ProviderKind.Server, "Nous Research's agent on your server, over SSH", "H", "#A78BFA"),
         new("anthropic", "Anthropic API", ProviderKind.Cloud, "Claude models with an Anthropic API key", "A", "#D97757",
             Api: ApiStyle.Anthropic, BaseUrl: "https://api.anthropic.com", KeyUrl: "https://console.anthropic.com/settings/keys", KeyPrefix: "sk-ant-",
@@ -148,6 +170,10 @@ public static class ProviderCatalog
                 return LocalCliBackend.Locate(cli) is null
                     ? new(ProviderReadiness.NotInstalled, "Not installed")
                     : new(ProviderReadiness.Ready, "Ready");
+            case "opencode":
+                if (OpenCodeBackend.LocateLocal() is not null) return new(ProviderReadiness.Ready, "Ready");
+                if (settings.Server.IsConfigured && ai.OpenCodeOnServer) return new(ProviderReadiness.Ready, "Ready (on your server)");
+                return new(ProviderReadiness.NotInstalled, "Install OpenCode");
             case "hermes":
                 if (!settings.Server.IsConfigured) return new(ProviderReadiness.NeedsServer, "Connect your server");
                 return ai.DetectedEngine == "hermes" || ai.HermesCommand.StartsWith("docker", StringComparison.Ordinal)

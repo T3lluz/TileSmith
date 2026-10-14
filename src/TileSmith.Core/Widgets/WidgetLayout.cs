@@ -81,7 +81,7 @@ public static partial class WidgetLayout
     public const int MaxElements = 60;
     public const double RootPadding = 14;
 
-    public static readonly string[] Containers = ["row", "column", "stack"];
+    public static readonly string[] Containers = ["row", "column", "stack", "list"];
     public static readonly string[] Content = ["text", "icon", "image", "progress", "ring", "sparkline", "spacer", "divider"];
     public static readonly string[] Interactive = ["button", "toggle", "slider", "choice"];
     public static IEnumerable<string> AllTypes => Containers.Concat(Content).Concat(Interactive);
@@ -103,6 +103,7 @@ public static partial class WidgetLayout
         ["row"] = ["children", "gap"],
         ["column"] = ["children", "gap"],
         ["stack"] = ["children"],
+        ["list"] = ["items", "template", "max", "direction", "gap", "empty"],
         ["text"] = ["text", "size", "weight", "color", "maxLines", "textAlign", "mono"],
         ["icon"] = ["icon", "size", "color"],
         ["image"] = ["src", "fit"],
@@ -129,7 +130,25 @@ public static partial class WidgetLayout
     }
 
     public static IEnumerable<JsonObject> Children(JsonObject el) =>
-        el["children"] is JsonArray arr ? arr.OfType<JsonObject>() : [];
+        el["children"] is JsonArray arr ? arr.OfType<JsonObject>() : el["template"] is JsonObject template ? [template] : [];
+
+    /// <summary>The data path a list repeats over: "{weather.days}" → "weather.days".</summary>
+    public static string? ListPath(JsonObject list) =>
+        Bindings.PathsIn(Text(list["items"])).FirstOrDefault();
+
+    /// <summary>
+    /// One copy of a list's template for item <paramref name="index"/>: "{item.x}" becomes "{path[index].x}" and
+    /// "{index}" the 1-based position, everywhere in the copy.
+    /// </summary>
+    public static JsonObject Instantiate(JsonObject template, string path, int index)
+    {
+        var json = template.ToJsonString()
+            .Replace("{item}", "{" + path + "[" + index + "]}", StringComparison.Ordinal)
+            .Replace("{item.", "{" + path + "[" + index + "].", StringComparison.Ordinal)
+            .Replace("{item|", "{" + path + "[" + index + "]|", StringComparison.Ordinal)
+            .Replace("{index}", (index + 1).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+        return JsonNode.Parse(json)!.AsObject();
+    }
 
     /// <summary>Every element, depth first.</summary>
     public static IEnumerable<JsonObject> Walk(JsonObject root)
@@ -286,13 +305,13 @@ public static partial class WidgetLayout
         // template sources must exist
         foreach (var (key, node) in el.ToList())
         {
-            if (key is "children" or "options" or "tap" or "action" or "on" or "off" or "state") continue;
+            if (key is "children" or "template" or "options" or "tap" or "action" or "on" or "off" or "state") continue;
             foreach (var text in Branches(node).Concat(Conditions(node)))
             {
                 foreach (var s in Bindings.SourcesIn(text))
                 {
                     used.Add(s);
-                    if (!sources.Contains(s))
+                    if (!sources.Contains(s) && !(InTemplate(path) && s is "item" or "index"))
                         errors.Add($"{path}.{key} uses \"{{{s}}}\" but there is no data \"{s}\"{(sources.Count > 0 ? $" (data: {string.Join(", ", sources)})" : " — add it under \"data\"")}.");
                 }
             }
@@ -334,6 +353,16 @@ public static partial class WidgetLayout
         {
             case "row" or "column" or "stack":
                 if (el["children"] is not JsonArray arr || arr.Count == 0) errors.Add($"{path}: a {type} needs \"children\".");
+                break;
+            case "list":
+                if (ListPath(el) is not { } listPath || Bindings.PathsIn(Text(el["items"])).Count() != 1)
+                    errors.Add($"{path}.items must be one data value that is a JSON array, like \"{{top}}\" or \"{{weather.days}}\".");
+                else if (!sources.Contains(Bindings.SplitPath(listPath).Name))
+                    errors.Add($"{path}.items uses \"{{{listPath}}}\" but there is no data \"{Bindings.SplitPath(listPath).Name}\".");
+                else used.Add(Bindings.SplitPath(listPath).Name);
+                if (el["template"] is not JsonObject) errors.Add($"{path}: a list needs \"template\": the element shown for each item (use {{item.field}} inside it).");
+                CheckNumber(el, "max", 1, 20, path, errors);
+                if (Text(el["direction"]) is { } direction && direction is not ("column" or "row")) errors.Add($"{path}.direction must be column or row.");
                 break;
             case "text":
                 if (!Branches(el["text"]).Any()) errors.Add($"{path}: text needs \"text\".");
@@ -413,6 +442,8 @@ public static partial class WidgetLayout
                 break;
         }
 
+        if (type == "list" && el["template"] is JsonObject itemTemplate)
+            ValidateElement(itemTemplate, $"{path}.template", depth + 1, sources, used, ref count, errors, warnings);
         var i2 = 0;
         if (el["children"] is JsonArray children)
         {
@@ -425,6 +456,8 @@ public static partial class WidgetLayout
             }
         }
     }
+
+    private static bool InTemplate(string path) => path.Contains(".template", StringComparison.Ordinal);
 
     private static void CheckNumber(JsonObject el, string key, double min, double max, string path, List<string> errors, bool allowArray = false)
     {
@@ -470,6 +503,16 @@ public static partial class WidgetLayout
                 var kids = Children(el).Select(Estimate).ToList();
                 var gap = Num(el["gap"]) ?? 6;
                 inner = (kids.Count == 0 ? 0 : kids.Max(k => k.W), kids.Sum(k => k.H) + gap * Math.Max(0, kids.Count - 1));
+                break;
+            }
+            case "list":
+            {
+                var item = el["template"] is JsonObject t ? Estimate(t) : (0, 0);
+                var n = Num(el["max"]) ?? 5;
+                var gap = Num(el["gap"]) ?? 6;
+                inner = Text(el["direction"]) == "row"
+                    ? (item.W * n + gap * (n - 1), item.H)
+                    : (item.W, item.H * n + gap * (n - 1));
                 break;
             }
             case "stack":
@@ -583,6 +626,9 @@ public static partial class WidgetLayout
         "fill"), flex (share of the free space in a row/column), padding (n or [h,v] or [l,t,r,b]), background, radius, border
         (colour), opacity, align/valign (start|center|end|stretch)):
         - row {children, gap} · column {children, gap} · stack {children} (layers on top of each other, e.g. text over an image)
+        - list {items: "{name}" (a JSON array value), template: Element, max (1–20, default 5), direction: column|row, gap, empty: text}
+            — repeats the template for each item; inside it use {item}, {item.field} and {index} (1, 2, 3…).
+            For forecasts, top apps, containers, recent files… e.g. items "{weather.days}", template a row with {item.day} and {item.high}.
         - text {text, size, weight: regular|medium|semibold|bold, color, maxLines (1–6), textAlign, mono: bool}
         - icon {icon (Material Symbols name, may be a placeholder or conditional), size (px, default 20), color}
         - image {src: https URL | file path | data URI | "{media.art}", fit: cover|contain|fill}  (set width/height, radius)

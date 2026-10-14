@@ -12,7 +12,7 @@ public static class AiEngineFactory
 {
     /// <summary>Order in which "Automatic" and the fallback chain try providers.</summary>
     private static readonly string[] Preference =
-        ["hermes", "claude", "cursor", "anthropic", "openai", "gemini", "openrouter", "xai", "mistral", "deepseek", "groq", "compatible", "ollama", "lmstudio", "command"];
+        ["hermes", "claude", "cursor", "anthropic", "openai", "gemini", "openrouter", "xai", "mistral", "deepseek", "groq", "compatible", "ollama", "lmstudio", "opencode", "command"];
 
     /// <summary>The provider id "Automatic" (or the user's choice) resolves to.</summary>
     public static string ResolveEngine(AppSettings settings)
@@ -78,6 +78,10 @@ public static class AiEngineFactory
                 return new LocalCliBackend(LocalCli.Claude, model, timeout, effort);
             case "cursor":
                 return new LocalCliBackend(LocalCli.Cursor, model, timeout);
+            case "opencode":
+                return OpenCodeBackend.LocateLocal() is not null || !settings.Server.IsConfigured
+                    ? new OpenCodeBackend(model, timeout, null)
+                    : new OpenCodeBackend(model, timeout, Server());
             case "hermes":
                 return new HermesCliBackend(Server(), string.IsNullOrWhiteSpace(ai.HermesCommand) ? "hermes" : ai.HermesCommand,
                     ai.HermesArgs, ai.HermesQuietFlag, ai.HermesSupportsQueryFile, model, timeout);
@@ -175,14 +179,34 @@ public static class ModelCatalog
         }
     }
 
-    /// <summary>What to show right away: the cached list, else the provider's suggestions.</summary>
+    /// <summary>What to show right away: the cached list, else what models.dev knows, else the provider's suggestions.</summary>
     public static IReadOnlyList<ModelInfo> Known(ProviderInfo provider)
     {
         lock (Gate)
         {
             if (Cache.TryGetValue(provider.Id, out var entry) && entry.Models.Count > 0) return entry.Models;
         }
+        var directory = FromDirectory(provider);
+        if (directory.Count > 0) return directory;
         return provider.Suggested ?? (provider.Id is "hermes" or "command" ? [ModelInfo.Default()] : []);
+    }
+
+    /// <summary>Claude Code's aliases (they follow the newest model of each line), then every current Claude model.</summary>
+    private static readonly ModelInfo[] ClaudeAliases =
+    [
+        ModelInfo.Default("Claude Code's default") with { Brand = "claude" },
+        new("opus", "Opus (latest)", "Always the newest Opus · best for building widgets") { Brand = "claude" },
+        new("sonnet", "Sonnet (latest)", "Always the newest Sonnet · fast and capable") { Brand = "claude" },
+        new("haiku", "Haiku (latest)", "Always the newest Haiku · fastest") { Brand = "claude" },
+    ];
+
+    /// <summary>The provider's models according to models.dev (empty when it isn't listed or not loaded yet).</summary>
+    public static IReadOnlyList<ModelInfo> FromDirectory(ProviderInfo provider)
+    {
+        var models = ModelDirectory.Chat(ModelDirectory.For(provider.Id)).Select(m => ModelDirectory.ToModelInfo(m, provider.Id)).ToList();
+        if (provider.Id == "claude") return models.Count == 0 ? [] : [.. ClaudeAliases, .. models];
+        if (provider.Id == "opencode") return models.OrderByDescending(m => m.Free).ThenByDescending(m => m.Released ?? "").ToList();
+        return models;
     }
 
     public static DateTimeOffset? LastFetched(ProviderInfo provider)
@@ -194,11 +218,17 @@ public static class ModelCatalog
     public static async Task<IReadOnlyList<ModelInfo>> RefreshAsync(ProviderInfo provider, AppSettings settings, Func<ServerConnection> server, CancellationToken ct)
     {
         var ai = settings.Ai;
+        await ModelDirectory.EnsureFreshAsync(ct);
         IReadOnlyList<ModelInfo> models;
         switch (provider.Id)
         {
             case "claude":
-                return provider.Suggested!;
+                models = FromDirectory(provider);
+                if (models.Count == 0) return provider.Suggested!;
+                break;
+            case "opencode":
+                models = await OpenCodeBackend.ListModelsAsync(ct);
+                break;
             case "command":
                 return [ModelInfo.Default("Set by the command")];
             case "cursor":
@@ -218,6 +248,7 @@ public static class ModelCatalog
                 models = Filter(provider, await backend.ListModelsAsync(ct));
                 break;
         }
+        models = models.Select(m => ModelDirectory.Enrich(m, provider.Id)).ToList();
         lock (Gate)
         {
             Cache[provider.Id] = new Entry(DateTimeOffset.Now, [.. models]);

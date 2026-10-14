@@ -321,7 +321,11 @@ public sealed class OpenAiBackend(
             string? detail = null;
             if (context is not null && long.TryParse(context.ToString(), out var tokens) && tokens > 0) detail = tokens >= 1_000_000 ? $"{tokens / 1_000_000.0:0.#}M context" : $"{tokens / 1000}K context";
             var created = item["created"] is { } c && long.TryParse(c.ToString(), out var t) ? t : 0;
-            list.Add((new ModelInfo(id, display, detail), created));
+            // OpenRouter: ":free" variants and zero pricing
+            var free = id.EndsWith(":free", StringComparison.OrdinalIgnoreCase)
+                       || (item["pricing"] is JsonObject price && price["prompt"]?.ToString() is "0" && price["completion"]?.ToString() is "0");
+            if (free) detail = detail is null ? "Free" : "Free · " + detail;
+            list.Add((new ModelInfo(id, display, detail) { Free = free }, created));
         }
         var ordered = list.Any(x => x.Created > 0)
             ? list.OrderByDescending(x => x.Created).ThenBy(x => x.Model.Id, StringComparer.OrdinalIgnoreCase)

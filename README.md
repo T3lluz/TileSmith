@@ -3,8 +3,8 @@
 <h1 align="center">TileSmith</h1>
 
 <p align="center"><b>Quick settings for Windows that your AI builds for you.</b><br>
-A panel in the taskbar corner with Android-style tiles — and an agent that turns
-“switch my laptop between 2560×1440 and 1920×1200” into a working tile in seconds.</p>
+A Liquid Glass panel in the taskbar corner — and Widget Studio, where you describe a widget, watch it appear
+with your real data, and keep chatting until it's exactly right.</p>
 
 <p align="center"><img src="assets/panel.png" width="560" alt="The TileSmith panel"></p>
 
@@ -25,14 +25,25 @@ dot turns green, and one click installs it.
   (size, duplicate, edit JSON, remove). In edit mode (pencil) the **corner handle** resizes and **✦** changes a tile with AI.
 - **+ Add widget** opens a gallery of ready-made tiles; the chip in the header picks the AI and model.
 - Shortcuts: Ctrl+K ask the AI · Ctrl+G gallery · Ctrl+E edit · Ctrl+M model · Ctrl+, settings · ↑ previous prompts.
-- **Ask for anything** in the bar at the bottom. Try:
-  - *“Build a widget where I can switch my laptop display between 2560×1440 and 1920×1200”*
-  - *“A toggle for my VPN”* · *“Restart my Plex container on the server”* · *“Media controls”*
+- **Ask for anything** in the bar at the bottom — it opens **Widget Studio**. Try:
+  - *“Weather where I live with the next few days”* · *“A dashboard with CPU, memory and disk gauges”*
+  - *“Switch my laptop display between 2560×1440 and 1920×1200”* · *“A toggle for my VPN”*
+  - *“What's playing, with the cover art”* · *“The five apps using the most CPU”*
 
-The agent looks at your PC, writes and tests whatever it needs (PowerShell scripts, files — with a UAC
-prompt for anything that needs admin), then drops the finished tile into the panel. Every step is shown
-live; **Stop** and **Undo** are always there. Prefer to approve each command? Settings › AI & server ›
-*What the agent may do*.
+## Widget Studio
+
+Chat on the left, your widget on the right — live, at its real size, with its real data (taps in the preview
+run for real). The AI looks at your PC, writes and tests whatever it needs, and before every draft TileSmith
+runs the widget's queries and checks that the tile can read them. Then:
+
+- **Keep chatting** — “make it more compact”, “add a graph”, “use green when it's online” — the AI changes only what you ask.
+- **Step back** to any earlier version (v1, v2…), pick another size, or edit the JSON.
+- **Add to panel** when you like it. Tiles that fail later offer **Fix with AI**, which hands the error back to the Studio.
+
+The AI designs each tile freely from rows, columns, text, icons, images, gauges, progress bars, history lines,
+lists and buttons — within styling rules (colour tokens, a type scale, spacing) that keep everything native in
+light and dark mode. Live data comes from built-ins (CPU, memory, disk, network speed, busiest apps, weather,
+what's playing, battery, countdowns, ping, values a widget remembers) or any script that prints JSON.
 
 ## Connect your AI
 
@@ -40,6 +51,7 @@ Open **Settings › AI** and pick a provider — each shows whether it's ready, 
 
 | Engine | How it connects |
 |---|---|
+| **OpenCode** (free models) | The official `opencode` CLI on this PC or your server — free models without an account; sign in to OpenCode Zen for more |
 | **Hermes Agent** (Nous Research) | SSH to your server, runs `hermes chat --query-file …` |
 | **OpenAI-compatible API** | Hermes API server, Ollama, vLLM, LM Studio, OpenRouter… — through an SSH tunnel or directly |
 | **Custom command** | Any CLI on your server that reads a prompt (`claude -p`, `ollama run …`, `llm`) |
@@ -48,7 +60,13 @@ Open **Settings › AI** and pick a provider — each shows whether it's ready, 
 | **Anthropic, OpenAI, Gemini, OpenRouter, Groq, Mistral, xAI, DeepSeek** | Your API key, stored encrypted with DPAPI |
 | **Ollama, LM Studio** | Models running on this PC |
 
-If the chosen AI can't be reached, TileSmith falls back to the next ready one (Settings › AI › Behaviour).
+The model picker (the chip in the panel's header or the Studio) shows every model each provider offers — live
+from the provider, with names, release dates, context sizes and prices from [models.dev](https://models.dev) —
+and searches across all of them. If the chosen AI can't be reached, TileSmith falls back to the next ready one
+(Settings › AI › Behaviour).
+
+**Run as administrator** (Settings › General) starts TileSmith elevated — Windows asks once — so widgets and the
+AI can change system settings without a prompt every time.
 
 For a server: type `you@hostname` (or pick it from your **Tailscale** tailnet), enter the password and press
 **Connect**, then **Detect** to find the AI tools there. *Sign in with a key instead* swaps the password for a
@@ -57,23 +75,17 @@ server host keys are pinned on first connect.
 
 ## How it works
 
-Widgets are small JSON documents (stored in `%AppData%\TileSmith\widgets.json`) made of controls —
-`button`, `toggle`, `choice`, `slider`, `status` — bound to **actions**. Built-in actions cover display
-resolution and refresh rate, brightness, volume and microphone, dark mode, power mode, Wi-Fi and Bluetooth,
-media keys, shortcuts, apps, URLs, commands on your server and HTTP webhooks; anything else runs as a
-PowerShell script. The model never touches your PC directly: TileSmith runs the agent's tools locally and
-sends the results back.
-
-When the standard controls aren't enough, the agent designs the tile itself: a **layout** of rows, columns,
-text, icons, images, progress bars, rings, sparklines and buttons, fed by live **data** (CPU, memory, disk,
-what's playing with its cover art, countdowns, ping, values the widget remembers, or any script that prints
-JSON). Layouts follow the panel's styling rules, colour tokens and type scale, so they match light and dark
-mode and your accent colour. Before a widget is saved, TileSmith runs its queries and checks that the tile can
-actually read them, and if a tile fails later, **Fix with AI** hands the error straight back to the agent.
+Widgets are small JSON documents (stored in `%AppData%\TileSmith\widgets.json`): a **layout** of elements fed by
+live **data**, or for simple switches a single control (`toggle`, `slider`, `choice`, `button`, `status`), all bound
+to **actions**. Built-in actions cover display resolution and refresh rate, brightness, volume and microphone, dark
+mode, power mode, Wi-Fi and Bluetooth, media keys and now playing, system stats, network, weather, shortcuts, apps,
+URLs, commands on your server and HTTP webhooks; anything else runs as a PowerShell script (queries on two warm
+PowerShell hosts, so tiles that refresh every few seconds stay fast). The model never touches your PC directly:
+TileSmith runs the agent's tools locally and sends the results back.
 
 ```
 src/TileSmith.Core   widget model & validator, actions (Win32 display/audio/power…), agent loop, AI backends, SSH
-src/TileSmith        WinUI 3 app: tray icon, panel, tiles, settings, Velopack updates
+src/TileSmith        WinUI 3 app: tray icon, Liquid Glass panel, tiles, Widget Studio, settings, Velopack updates
 tests/               unit tests incl. an end-to-end agent run against a scripted model
 ```
 

@@ -251,7 +251,8 @@ public static class WidgetValidator
     {
         var kind = node.GetValueKind();
         var text = kind == JsonValueKind.String ? node.GetValue<string>() : null;
-        var isPlaceholder = text?.Contains("{value}", StringComparison.OrdinalIgnoreCase) == true;
+        // "{value}" (sliders, toggles) and data placeholders in layout widgets ("{item.pid}") are filled in when it runs
+        var isPlaceholder = text?.Contains("{value}", StringComparison.OrdinalIgnoreCase) == true || Bindings.HasPlaceholders(text);
 
         switch (p.Type)
         {

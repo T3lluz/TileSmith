@@ -98,6 +98,16 @@ public static class Kit
         Grid.SetColumn(texts, 1);
         grid.Children.Add(texts);
 
+        if (trailing is PillSwitch toggle)
+        {
+            // the whole row is the switch's hit target, like Windows Settings
+            grid.Background = new SolidColorBrush(Colors.Transparent);
+            grid.Tapped += (_, e) =>
+            {
+                if (e.OriginalSource is DependencyObject source && IsInside(source, toggle)) return;
+                toggle.Toggle();
+            };
+        }
         if (trailing is FrameworkElement control)
         {
             control.VerticalAlignment = VerticalAlignment.Center;
@@ -133,6 +143,15 @@ public static class Kit
         var chip = new Chip(text, icon, height: 36, style: style);
         if (onClick is not null) chip.Click += (_, _) => onClick();
         return chip;
+    }
+
+    private static bool IsInside(DependencyObject element, DependencyObject ancestor)
+    {
+        for (var e = element; e is not null; e = VisualTreeHelper.GetParent(e))
+        {
+            if (ReferenceEquals(e, ancestor)) return true;
+        }
+        return false;
     }
 
     public static PillSwitch Toggle(bool on, Action<bool> changed)

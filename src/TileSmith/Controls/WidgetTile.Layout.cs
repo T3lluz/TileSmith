@@ -20,7 +20,10 @@ namespace TileSmith.Controls;
 public sealed partial class WidgetTile
 {
     private readonly BindingData _data = new();
-    private readonly List<Action> _bindings = [];
+
+    /// <summary>The palette the tile was built with: colour tokens resolve against it even when another window changed the current one.</summary>
+    private readonly Palette _palette = Palette.Current;
+    private List<Action> _bindings = [];
     private readonly List<(string Key, string Template)> _trackers = [];
     private readonly Dictionary<string, DateTime> _dataRunAt = new(StringComparer.OrdinalIgnoreCase);
     private bool _pollTick;
@@ -38,7 +41,7 @@ public sealed partial class WidgetTile
 
     private UIElement LayoutTile()
     {
-        var p = Palette.Current;
+        var p = _palette;
         var root = Widget.Layout!;
         var surface = new Border
         {
@@ -82,7 +85,7 @@ public sealed partial class WidgetTile
 
     private void ApplyBindings()
     {
-        foreach (var apply in _bindings)
+        foreach (var apply in _bindings.ToArray())
         {
             try { apply(); }
             catch (Exception ex) { Log.Warn($"Layout of \"{Widget.Title}\": {ex.Message}"); }
@@ -99,13 +102,14 @@ public sealed partial class WidgetTile
             "row" => Row(el, depth),
             "column" => Column(el, depth),
             "stack" => Stack(el, depth),
+            "list" => ListElement(el, depth),
             "text" => TextElement(el),
             "icon" => IconElement(el),
             "image" => ImageElement(el, parent),
             "progress" => ProgressElement(el),
             "ring" => RingElement(el, depth),
             "sparkline" => SparklineElement(el),
-            "divider" => new Border { Height = 1, Background = Palette.Current.Brush(Tint(WL.Text(el["color"])) ?? Palette.Current.Hairline) },
+            "divider" => new Border { Height = 1, Background = _palette.Brush(Tint(WL.Text(el["color"])) ?? _palette.Hairline) },
             "button" => ButtonElement(el),
             "toggle" => ToggleElement(el),
             "slider" => SliderElement(el),
@@ -119,7 +123,7 @@ public sealed partial class WidgetTile
     /// <summary>Box properties every element has: background, radius, border, padding, tap, size, alignment, visibility.</summary>
     private FrameworkElement Decorate(JsonObject el, string type, FrameworkElement view, string? parent)
     {
-        var p = Palette.Current;
+        var p = _palette;
         var isRoot = parent is null;
         var radius = WL.Num(el["radius"]) ?? (isRoot ? Radius : 0);
         var pad = WL.Padding(el);
@@ -134,7 +138,7 @@ public sealed partial class WidgetTile
             press.Click += async (_, _) =>
             {
                 Motion.Pulse(press, 1.04f);
-                await RunAsync(tap, null);
+                await RunAsync(Bindings.ResolveAction(tap, _data), null);
             };
             _pressables.Add(press);
             outer = press;
@@ -170,7 +174,7 @@ public sealed partial class WidgetTile
 
     private void BindBox(JsonObject el, Action applyBackground, Pressable? press, Border? border)
     {
-        var p = Palette.Current;
+        var p = _palette;
         void Apply()
         {
             applyBackground();
@@ -261,9 +265,67 @@ public sealed partial class WidgetTile
         return grid;
     }
 
+    /// <summary>Repeats the template for each item of a JSON array value; rebuilt only when the number of items changes.</summary>
+    private Grid ListElement(JsonObject el, int depth)
+    {
+        var p = _palette;
+        var path = WL.ListPath(el) ?? "";
+        var template = el["template"] as JsonObject;
+        var horizontal = WL.Text(el["direction"]) == "row";
+        var max = (int)Math.Clamp(WL.Num(el["max"]) ?? 5, 1, 20);
+        var gap = WL.Num(el["gap"]) ?? 6;
+        var host = new Grid();
+        var items = new Grid { ColumnSpacing = gap, RowSpacing = gap };
+        var empty = Ui.Text(WL.Text(el["empty"]) ?? "", 12, p.Text3, maxLines: 2);
+        empty.Visibility = Visibility.Collapsed;
+        host.Children.Add(items);
+        host.Children.Add(empty);
+        var itemBindings = new List<Action>();
+        var shown = -1;
+        _bindings.Add(() =>
+        {
+            var count = template is null ? 0 : Math.Min(_data.Length(path) ?? 0, max);
+            if (count != shown)
+            {
+                shown = count;
+                items.Children.Clear();
+                items.RowDefinitions.Clear();
+                items.ColumnDefinitions.Clear();
+                itemBindings.Clear();
+                var outer = _bindings;
+                _bindings = itemBindings;
+                try
+                {
+                    for (var i = 0; i < count; i++)
+                    {
+                        var view = Element(WL.Instantiate(template!, path, i), horizontal ? "row" : "column", depth + 1);
+                        if (horizontal)
+                        {
+                            items.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                            Grid.SetColumn(view, i);
+                        }
+                        else
+                        {
+                            items.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                            Grid.SetRow(view, i);
+                        }
+                        items.Children.Add(view);
+                    }
+                }
+                finally
+                {
+                    _bindings = outer;
+                }
+            }
+            foreach (var apply in itemBindings.ToArray()) apply();
+            empty.Visibility = count == 0 && empty.Text.Length > 0 && _data.Has(Bindings.SplitPath(path).Name) ? Visibility.Visible : Visibility.Collapsed;
+        });
+        return host;
+    }
+
     private TextBlock TextElement(JsonObject el)
     {
-        var p = Palette.Current;
+        var p = _palette;
         var size = StyleTokens.FontSize(el["size"], 13) ?? 13;
         var lines = (int)Math.Clamp(WL.Num(el["maxLines"]) ?? 1, 1, 6);
         var block = Ui.TipWhenTrimmed(Ui.Text("", size, p.Text1, maxLines: lines));
@@ -286,12 +348,8 @@ public sealed partial class WidgetTile
         _bindings.Add(() =>
         {
             var text = Bindings.Render(WL.Prop(el, "text", _data), _data);
-            if (block.Text != text)
-            {
-                var first = block.Text.Length == 0;
-                block.Text = text;
-                if (!first && Bindings.HasPlaceholders(WL.Prop(el, "text", _data))) Motion.Enter(block, 3, 0, Motion.Fast);
-            }
+            // values change in place: a dashboard that refreshes every few seconds must not twitch
+            if (block.Text != text) block.Text = text;
             block.Foreground = p.Brush(Tint(WL.Prop(el, "color", _data)) ?? p.Text1);
         });
         return block;
@@ -299,7 +357,7 @@ public sealed partial class WidgetTile
 
     private TextBlock IconElement(JsonObject el)
     {
-        var p = Palette.Current;
+        var p = _palette;
         var icon = Glyph.Make(null, WL.Num(el["size"]) ?? 20, p.Text1);
         _bindings.Add(() =>
         {
@@ -379,7 +437,7 @@ public sealed partial class WidgetTile
 
     private Grid ProgressElement(JsonObject el)
     {
-        var p = Palette.Current;
+        var p = _palette;
         var thickness = WL.Num(el["thickness"]) ?? 6;
         var track = new Grid { Height = thickness, CornerRadius = new CornerRadius(thickness / 2) };
         var fill = new Border { HorizontalAlignment = HorizontalAlignment.Left, CornerRadius = new CornerRadius(thickness / 2), Width = 0 };
@@ -398,7 +456,7 @@ public sealed partial class WidgetTile
 
     private Grid RingElement(JsonObject el, int depth)
     {
-        var p = Palette.Current;
+        var p = _palette;
         var size = WL.Num(el["size"]) ?? 56;
         var thickness = WL.Num(el["thickness"]) ?? 6;
         var grid = new Grid { Width = size, Height = size };
@@ -439,7 +497,7 @@ public sealed partial class WidgetTile
 
     private Grid SparklineElement(JsonObject el)
     {
-        var p = Palette.Current;
+        var p = _palette;
         var template = WL.Text(el["value"]) ?? "";
         var key = "spark:" + template;
         _trackers.Add((key, template));
@@ -483,16 +541,16 @@ public sealed partial class WidgetTile
 
     // ── Interactive elements (same behaviour as the standard controls) ─────────────
 
-    private static ControlDefinition ControlOf(JsonObject el, string type) => new()
+    private ControlDefinition ControlOf(JsonObject el, string type) => new()
     {
         Type = type,
         Label = WL.Text(el["label"]),
         Icon = WL.Text(el["icon"]),
         Style = WL.Text(el["variant"]) ?? WL.Text(el["style"]),
-        Action = el["action"] as JsonObject,
-        On = el["on"] as JsonObject,
-        Off = el["off"] as JsonObject,
-        State = el["state"] as JsonObject,
+        Action = Resolve(el["action"] as JsonObject),
+        On = Resolve(el["on"] as JsonObject),
+        Off = Resolve(el["off"] as JsonObject),
+        State = Resolve(el["state"] as JsonObject),
         OnValue = WL.Text(el["onValue"]),
         OnText = WL.Text(el["onText"]),
         OffText = WL.Text(el["offText"]),
@@ -506,13 +564,15 @@ public sealed partial class WidgetTile
             Label = WL.Text(o["label"]) ?? "",
             Value = WL.Text(o["value"]),
             Icon = WL.Text(o["icon"]),
-            Action = o["action"] as JsonObject,
+            Action = Resolve(o["action"] as JsonObject),
         }).ToList(),
     };
 
+    private JsonObject? Resolve(JsonObject? action) => action is null ? null : Bindings.ResolveAction(action, _data);
+
     private Pressable ButtonElement(JsonObject el)
     {
-        var p = Palette.Current;
+        var p = _palette;
         var control = ControlOf(el, ControlType.Button);
         var hasLabel = WL.Branches(el["label"]).Any(l => l.Length > 0);
         var variant = WL.Text(el["variant"]) ?? (hasLabel ? "tonal" : "icon");
@@ -530,7 +590,14 @@ public sealed partial class WidgetTile
         pill.Click += async (_, _) =>
         {
             Motion.Pulse(glyph, 1.15f);
-            await RunButtonAsync(control, pill);
+            var resolved = control.Action is null ? control : new ControlDefinition
+            {
+                Type = control.Type,
+                Label = control.Label,
+                Confirm = control.Confirm is null ? null : Bindings.RenderKnown(control.Confirm, _data),
+                Action = Bindings.ResolveAction(control.Action, _data),
+            };
+            await RunButtonAsync(resolved, pill);
         };
         _bindings.Add(() =>
         {
@@ -566,7 +633,7 @@ public sealed partial class WidgetTile
                 return (FrameworkElement)PillTile(control);
             case "chip":
             {
-                var p = Palette.Current;
+                var p = _palette;
                 var chip = Surface(p.Tile);
                 chip.Height = 36;
                 chip.CornerRadius = new CornerRadius(18);
@@ -604,7 +671,7 @@ public sealed partial class WidgetTile
         var stack = new StackPanel { Spacing = 4 };
         if (!string.IsNullOrWhiteSpace(control.Label))
         {
-            var label = Ui.TipWhenTrimmed(Ui.Text(control.Label!, 11.5, Palette.Current.Text2, semibold: true));
+            var label = Ui.TipWhenTrimmed(Ui.Text(control.Label!, 11.5, _palette.Text2, semibold: true));
             stack.Children.Add(label);
         }
         stack.Children.Add(BuildSegmented(control, 36));
@@ -612,10 +679,10 @@ public sealed partial class WidgetTile
     }
 
     /// <summary>Token ("accent", "text2/60") or #hex → colour for the current theme.</summary>
-    private static Color? Tint(string? value)
+    private Color? Tint(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
-        var p = Palette.Current;
+        var p = _palette;
         var v = value.Trim();
         if (v.StartsWith('#'))
         {

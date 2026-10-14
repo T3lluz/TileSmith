@@ -177,6 +177,8 @@ public static class WidgetTemplates
         // ── System info ────────────────────────────────────────────────────────────────
         Add("dashboard", "System info", "System dashboard", "CPU, memory and disk gauges, live", Example("System dashboard"));
         Add("cpu-graph", "System info", "CPU graph", "CPU load with a line of the last minute", Example("Live value with a history line"));
+        Add("top-apps", "System info", "Busiest apps", "The four apps using the most CPU, live", Example("A live list: busiest apps"));
+        Add("network", "System info", "Network", "Wi-Fi name, IP address and live speed", Example("Network and live speed"));
         Add("cpu", "System info", "CPU load", "Processor load, every 5 seconds", """
             {"title":"CPU","icon":"memory","size":"2x1","refreshSeconds":5,"controls":[{"type":"status","label":"CPU load","state":{"type":"shell.powershell","script":"[math]::Round((Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average)"},"format":"{value}%"}]}
             """);

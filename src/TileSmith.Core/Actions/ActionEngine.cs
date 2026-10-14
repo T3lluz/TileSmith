@@ -91,7 +91,9 @@ public sealed class ActionEngine
             ["url.open"] = (c, _) => Sync(() => ShellOpen(c.Require("url"))),
             ["folder.open"] = (c, _) => Sync(() => ShellOpen(Environment.ExpandEnvironmentVariables(c.Require("path")))),
 
-            ["shell.powershell"] = (c, ct) => PowerShellRunner.RunAsync(c.Require("script"), c.GetBool("admin") == true, c.GetInt("timeoutSeconds") ?? 30, ct)!,
+            ["shell.powershell"] = (c, ct) => c.ReadOnly && c.GetBool("admin") != true
+                ? PowerShellHost.QueryAsync(c.Require("script"), c.GetInt("timeoutSeconds") ?? 30, ct)!
+                : PowerShellRunner.RunAsync(c.Require("script"), c.GetBool("admin") == true, c.GetInt("timeoutSeconds") ?? 30, ct)!,
             ["shell.cmd"] = (c, ct) => RunCmdAsync(c.Require("command"), c.GetInt("timeoutSeconds") ?? 30, ct)!,
             ["server.run"] = async (c, ct) => (await _host.RunOnServerAsync(c.Require("command"), TimeSpan.FromSeconds(c.GetInt("timeoutSeconds") ?? 30), ct)).Trim(),
             ["http.request"] = HttpRequestAsync,
@@ -101,6 +103,9 @@ public sealed class ActionEngine
             ["time.now"] = (c, _) => Value(() => Clock.Now(c.GetString("format"))),
             ["time.until"] = (c, _) => Value(() => Clock.Until(c.Require("when"))),
             ["network.ping"] = async (c, _) => await NetworkProbe.PingAsync(c.Require("host"), c.GetInt("timeoutMs") ?? 1500),
+            ["weather.get"] = async (c, ct) => await Weather.GetAsync(c.Require("location"), c.GetString("units"), ct),
+            ["network.info"] = async (_, ct) => await NetworkInfo.GetAsync(ct),
+            ["system.top"] = async (c, ct) => await TopProcesses.GetAsync(c.GetString("by"), c.GetInt("count") ?? 5, ct),
             ["store.get"] = (c, _) => Value(() => LocalStore.Get(c.Require("key"), c.GetString("default"))),
             ["store.set"] = (c, _) => Value(() => LocalStore.Set(c.Require("key"), c.GetString("value") ?? "")),
             ["store.toggle"] = (c, _) => Value(() => LocalStore.Toggle(c.Require("key"))),
@@ -122,6 +127,10 @@ public sealed class ActionEngine
 
     public Task<string?> RunAsync(JsonObject action, string? value, CancellationToken ct = default) =>
         RunAsync(new ActionCall(action, value), ct);
+
+    /// <summary>Runs a state or data query (read-only), on the warm PowerShell host when it's a script.</summary>
+    public Task<string?> QueryAsync(JsonObject action, CancellationToken ct = default) =>
+        RunAsync(new ActionCall(action, null) { ReadOnly = true }, ct);
 
     public async Task<string?> RunAsync(ActionCall call, CancellationToken ct = default)
     {
@@ -335,7 +344,8 @@ public static class PowerShellRunner
     public static async Task<ProcessResult> RunRawAsync(string script, bool admin, int timeoutSeconds, CancellationToken ct)
     {
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 1, 600));
-        if (admin) return await RunElevatedAsync(script, timeout, ct);
+        // already elevated (Run as administrator): no UAC prompt needed
+        if (admin && !Elevation.IsElevated) return await RunElevatedAsync(script, timeout, ct);
         var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(Prelude + script));
         var result = await ProcessRunner.RunAsync("powershell.exe",
             ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], timeout, ct);

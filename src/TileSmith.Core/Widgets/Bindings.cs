@@ -45,12 +45,7 @@ public sealed class BindingData
         var (name, rest) = Bindings.SplitPath(path);
         if (!_raw.TryGetValue(name, out var raw)) return null;
         if (rest.Length == 0) return raw;
-        if (!_parsed.TryGetValue(name, out var root))
-        {
-            JsonExtractorLite.TryParse(raw, out root);
-            _parsed[name] = root;
-        }
-        var node = Bindings.Navigate(root, rest);
+        var node = Bindings.Navigate(Root(name, raw), rest);
         if (node is null) return null;
         return node.GetValueKind() switch
         {
@@ -61,6 +56,26 @@ public sealed class BindingData
             JsonValueKind.Null => "",
             _ => node.ToJsonString(),
         };
+    }
+
+    /// <summary>How many items a JSON array value has ("{top}", "{weather.days}"), or null when it isn't one.</summary>
+    public int? Length(string path)
+    {
+        var (name, rest) = Bindings.SplitPath(path);
+        if (!_raw.TryGetValue(name, out var raw)) return null;
+        var root = Root(name, raw);
+        var node = rest.Length == 0 ? root : Bindings.Navigate(root, rest);
+        return node is JsonArray array ? array.Count : null;
+    }
+
+    private JsonNode? Root(string name, string raw)
+    {
+        if (!_parsed.TryGetValue(name, out var root))
+        {
+            JsonExtractorLite.TryParse(raw, out root);
+            _parsed[name] = root;
+        }
+        return root;
     }
 }
 
@@ -122,6 +137,49 @@ public static partial class Bindings
             for (var i = 1; i < parts.Length; i++) value = ApplyFilter(value, parts[i].Trim());
             return value ?? Missing;
         });
+    }
+
+    /// <summary>Fills only the placeholders whose data exists, leaving others (like an action's "{value}") untouched.</summary>
+    public static string RenderKnown(string template, BindingData data) =>
+        PlaceholderRegex().Replace(template, m =>
+        {
+            var parts = m.Groups[1].Value.Split('|');
+            var (name, _) = SplitPath(parts[0].Trim());
+            if (!data.Has(name)) return m.Value;
+            var value = data.Resolve(parts[0].Trim());
+            for (var i = 1; i < parts.Length; i++) value = ApplyFilter(value, parts[i].Trim());
+            return value ?? "";
+        });
+
+    /// <summary>A copy of an action with data placeholders filled in ("{item.name}" in a list, "{media.app}"…).</summary>
+    public static JsonObject ResolveAction(JsonObject action, BindingData data)
+    {
+        var json = action.ToJsonString();
+        if (!HasPlaceholders(json)) return action;
+        var copy = JsonNode.Parse(json)!.AsObject();
+        Fill(copy, data);
+        return copy;
+    }
+
+    private static void Fill(JsonNode? node, BindingData data)
+    {
+        switch (node)
+        {
+            case JsonObject o:
+                foreach (var key in o.Select(kv => kv.Key).ToList())
+                {
+                    if (o[key] is JsonValue v && v.TryGetValue<string>(out var text) && HasPlaceholders(text)) o[key] = RenderKnown(text, data);
+                    else Fill(o[key], data);
+                }
+                break;
+            case JsonArray a:
+                for (var i = 0; i < a.Count; i++)
+                {
+                    if (a[i] is JsonValue v && v.TryGetValue<string>(out var text) && HasPlaceholders(text)) a[i] = RenderKnown(text, data);
+                    else Fill(a[i], data);
+                }
+                break;
+        }
     }
 
     /// <summary>A template that is exactly one placeholder resolves to its raw value (numbers for progress bars).</summary>
@@ -257,7 +315,7 @@ public static partial class Bindings
         return double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out value) && double.IsFinite(value);
     }
 
-    internal static (string Name, string Tail) SplitPath(string path)
+    public static (string Name, string Tail) SplitPath(string path)
     {
         path = path.Trim();
         var end = 0;

@@ -20,8 +20,8 @@ namespace TileSmith.Controls;
 public enum TileCommand { EditWithAi, EditJson, Duplicate, Remove }
 
 /// <summary>
-/// One widget on the board, drawn Android-style for its cell size: 1x1 icon tile, 2x1 Quick Settings pill,
-/// full-width pill slider or segmented bar, or a card for several controls. Every part uses the sizes in
+/// One widget on the board, drawn for its cell size: a free-form layout the AI designed, or for plain controls a 1x1
+/// icon tile, 2x1 quick-settings pill, full-width pill slider or segmented bar, or a card for several controls. Every part uses the sizes in
 /// <see cref="TileLayout"/>, the same numbers the validator and the AI work with, so content fits its tile.
 /// Runs the widget's actions and keeps each control in sync with its state query.
 /// </summary>
@@ -56,6 +56,7 @@ public sealed partial class WidgetTile : Grid
         Background = new SolidColorBrush(Colors.Transparent); // hit-testable everywhere (long-press anywhere)
         Children.Add(_surfaceHost);
         _surfaceHost.Children.Add(Build());
+        if (Palette.Current.IsGlass) Children.Add(Glass.Overlay(this, Radius));
 
         _errorDot = new Ellipse
         {
@@ -177,7 +178,7 @@ public sealed partial class WidgetTile : Grid
         return surface;
     }
 
-    /// <summary>2x1 (or bigger): Android Quick Settings tile — icon in a circle, label and state.</summary>
+    /// <summary>2x1 (or bigger): a quick-settings tile — icon in a circle, label and state.</summary>
     private UIElement PillTile(ControlDefinition control)
     {
         var p = Palette.Current;
@@ -437,11 +438,8 @@ public sealed partial class WidgetTile : Grid
                 var result = await QueryAsync(control.State, ct);
                 if (result is null) return;
                 var text = Format(control.Format ?? "{value}", Ui.FriendlyValue(result));
-                if (text != value.Text)
-                {
-                    value.Text = text;
-                    Motion.Enter(value, 4, 0, Motion.Fast);
-                }
+                // values change in place: a dashboard that refreshes every few seconds must not twitch
+                if (text != value.Text) value.Text = text;
             });
         }
         return surface;
@@ -772,7 +770,7 @@ public sealed partial class WidgetTile : Grid
     {
         try
         {
-            return await _host.Actions.RunAsync(action, null, ct);
+            return await _host.Actions.QueryAsync(action, ct);
         }
         catch (OperationCanceledException)
         {
@@ -789,7 +787,8 @@ public sealed partial class WidgetTile : Grid
 
     public async Task RefreshAsync()
     {
-        if (_refreshers.Count == 0 || IsPreview) return;
+        // previews (the gallery) read their data too — queries only read — but never run actions
+        if (_refreshers.Count == 0) return;
         _refreshCts?.Cancel();
         var cts = _refreshCts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         foreach (var refresh in _refreshers)

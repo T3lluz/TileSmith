@@ -348,27 +348,6 @@ public sealed class Chip : Pressable
     }
 }
 
-/// <summary>A round monogram badge for an AI provider (no logos — a letter on the provider's colour).</summary>
-public sealed class Avatar : Grid
-{
-    public Avatar(string monogram, Color color, double size = 32)
-    {
-        Width = Height = size;
-        CornerRadius = new CornerRadius(size / 2);
-        Background = Palette.Current.Brush(Palette.WithAlpha(color, Palette.Current.IsDark ? 0.22 : 0.18));
-        BorderBrush = Palette.Current.Brush(Palette.WithAlpha(color, 0.45));
-        BorderThickness = new Thickness(1);
-        var text = Ui.Text(monogram, monogram.Length > 1 ? size * 0.34 : size * 0.44, Palette.Current.IsDark ? Lighten(color) : Palette.Darken(color, 0.7), semibold: true);
-        text.HorizontalAlignment = HorizontalAlignment.Center;
-        text.VerticalAlignment = VerticalAlignment.Center;
-        text.TextLineBounds = TextLineBounds.Tight;
-        Children.Add(text);
-        IsHitTestVisible = false;
-    }
-
-    private static Color Lighten(Color c) => Color.FromArgb(255, (byte)(c.R + (255 - c.R) * 0.35), (byte)(c.G + (255 - c.G) * 0.35), (byte)(c.B + (255 - c.B) * 0.35));
-}
-
 /// <summary>
 /// Android's chunky Quick Settings slider: the whole pill is the control, the accent fill carries the icon,
 /// the label and value sit on the track. Drag or click anywhere; arrows/PageUp/PageDown work too.
@@ -640,15 +619,23 @@ public sealed class PillSwitch : Grid
         _thumb.TranslationTransition = new Vector3Transition { Duration = Motion.Normal };
         Children.Add(_thumb);
         Render();
-        PointerPressed += (_, e) => { _pressed = true; CapturePointer(e.Pointer); };
+        PointerPressed += (_, e) =>
+        {
+            if (!IsEnabledForInput) return;
+            _pressed = true;
+            CapturePointer(e.Pointer);
+            e.Handled = true;
+        };
         PointerReleased += (_, e) =>
         {
-            ReleasePointerCapture(e.Pointer);
-            if (!_pressed) return;
+            // read the flag before releasing: releasing the capture raises PointerCaptureLost, which clears it
+            var wasPressed = _pressed;
             _pressed = false;
-            Toggle();
+            ReleasePointerCapture(e.Pointer);
+            e.Handled = true;
+            var point = e.GetCurrentPoint(this).Position;
+            if (wasPressed && point.X >= -8 && point.Y >= -8 && point.X <= ActualWidth + 8 && point.Y <= ActualHeight + 8) Toggle();
         };
-        PointerCaptureLost += (_, _) => _pressed = false;
         KeyDown += (_, e) =>
         {
             if (e.Key is VirtualKey.Enter or VirtualKey.Space) { e.Handled = true; Toggle(); }
@@ -669,7 +656,8 @@ public sealed class PillSwitch : Grid
         }
     }
 
-    private void Toggle()
+    /// <summary>Flips the switch as if it was clicked (settings rows forward clicks on their text here).</summary>
+    public void Toggle()
     {
         if (!IsEnabledForInput) return;
         IsOn = !_on;
@@ -689,26 +677,34 @@ public sealed class PillSwitch : Grid
 }
 
 /// <summary>
-/// opencode's working indicator, as DailyDash draws it: eight blocks, a bright lead with a fading trail
-/// sweeping out and back, resting blocks drawn small. One frame every 40 ms while visible.
+/// opencode's working indicator, as DailyDash draws it: eight blocks, a bright lead with a fading trail sweeping out
+/// and back, resting blocks drawn small. Every block keeps a fixed slot and only its scale and colour change (on the
+/// compositor), so the indicator never changes size and nothing around it moves.
 /// </summary>
-public sealed class WorkingScanner : StackPanel
+public sealed class WorkingScanner : Grid
 {
     private const int Blocks = 8, HoldStart = 30, HoldEnd = 9, Trail = 6;
     private readonly List<Border> _blocks = [];
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(40) };
-    private readonly double _size;
     private long _frame = Blocks - 1;
 
     public WorkingScanner(double blockSize = 5, double gap = 2)
     {
-        _size = blockSize;
-        Orientation = Orientation.Horizontal;
-        Spacing = gap;
         VerticalAlignment = VerticalAlignment.Center;
+        Width = Blocks * blockSize + (Blocks - 1) * gap;
+        Height = blockSize;
+        IsHitTestVisible = false;
         for (var i = 0; i < Blocks; i++)
         {
-            var block = new Border { Width = blockSize, Height = blockSize, CornerRadius = new CornerRadius(blockSize * 0.22), VerticalAlignment = VerticalAlignment.Center };
+            var block = new Border
+            {
+                Width = blockSize,
+                Height = blockSize,
+                CornerRadius = new CornerRadius(blockSize * 0.22),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(i * (blockSize + gap), 0, 0, 0),
+                CenterPoint = new System.Numerics.Vector3((float)blockSize / 2, (float)blockSize / 2, 0),
+            };
             _blocks.Add(block);
             Children.Add(block);
         }
@@ -741,20 +737,22 @@ public sealed class WorkingScanner : StackPanel
             var distance = forward ? active - i : i - active;
             var trail = holding ? distance + holdProgress : distance is >= 0 and < Trail ? distance : -1;
             var block = _blocks[i];
+            float scale;
+            double alpha;
             if (trail is >= 0 and < Trail)
             {
-                var alpha = trail switch { 0 => 1.0, 1 => 0.9, _ => Math.Pow(0.65, trail - 1) };
-                block.Width = block.Height = _size;
-                block.Background = Palette.Current.Brush(Palette.WithAlpha(Color, alpha));
+                alpha = trail switch { 0 => 1.0, 1 => 0.9, _ => Math.Pow(0.65, trail - 1) };
+                scale = 1f;
             }
             else
             {
-                block.Width = block.Height = _size * 0.42;
-                block.Background = Palette.Current.Brush(Palette.WithAlpha(Color, 0.6 * fade));
+                alpha = 0.6 * fade;
+                scale = 0.42f;
             }
+            block.Scale = new System.Numerics.Vector3(scale, scale, 1);
+            block.Background = Palette.Current.Brush(Palette.WithAlpha(Color, alpha));
         }
     }
-
     private static (int, bool, int, int, int, int, bool) State(int frame)
     {
         const int back = Blocks - 1;

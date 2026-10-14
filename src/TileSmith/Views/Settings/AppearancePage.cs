@@ -19,8 +19,8 @@ public sealed class AppearancePage : SettingsPage
             AccentBlock());
 
         Section("Panel", null,
-            Kit.Row("rounded_corner", "Style", "Solid is the rounded Android-style sheet; Glass uses Windows acrylic.",
-                Kit.Segmented([("solid", "Solid"), ("glass", "Glass")], S.PanelStyle, id => { S.PanelStyle = id; Save(); }, 200)),
+            Kit.Row("blur_on", "Style", "Liquid Glass lets your wallpaper shine through blurred glass with bright edges; Solid is calm and opaque.",
+                Kit.Segmented([("glass", "Liquid Glass"), ("solid", "Solid")], S.PanelStyle == "solid" ? "solid" : "glass", id => { S.PanelStyle = id; Save(); }, 240)),
             Kit.Row("view_column", "Width", "Automatic starts at 4 columns and widens to 5 when you add lots of widgets.",
                 Kit.Segmented([("0", "Auto"), ("3", "3"), ("4", "4"), ("5", "5")], S.PanelColumns.ToString(), id => { S.PanelColumns = int.Parse(id); Save(); }, 240)),
             Kit.Row("animation", "Reduce motion", "Shorter, calmer animations: no springy tiles or cascades.",

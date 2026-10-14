@@ -26,7 +26,7 @@ public sealed class AiPage : SettingsPage
     private Grid? _testResult;
 
     public AiPage(AppHost host, SettingsWindow window)
-        : base(host, window, "AI", "Choose the AI that builds your widgets: your Claude or Cursor plan, Hermes on your server, or any provider with an API key.")
+        : base(host, window, "AI", "Choose the AI that builds your widgets: OpenCode's free models, your Claude or Cursor plan, Hermes on your server, or any provider with an API key.")
     {
         _selected = AiEngineFactory.ResolveEngine(S);
         Children.Add(new Border { Height = 18 });
@@ -76,7 +76,7 @@ public sealed class AiPage : SettingsPage
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.Children.Add(new Avatar(provider.Monogram, Palette.Parse(provider.Color), 52));
+        grid.Children.Add(ProviderLogo.Make(provider, 52));
         var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 3 };
         texts.Children.Add(Ui.Text("IN USE", 11, p.Text3, semibold: true));
         texts.Children.Add(Ui.Text(ProviderCatalog.ModelLabel(provider, model), 20, p.Text1, semibold: true));
@@ -192,7 +192,7 @@ public sealed class AiPage : SettingsPage
             var row = new Grid { Padding = new Thickness(14, 0, 12, 0), ColumnSpacing = 12 };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            row.Children.Add(new Avatar(provider.Monogram, Palette.Parse(provider.Color), 38));
+            row.Children.Add(ProviderLogo.Make(provider, 40));
             var texts = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
             var nameRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
             nameRow.Children.Add(Ui.Text(provider.Name, 13.5, p.Text1, semibold: true));
@@ -241,7 +241,7 @@ public sealed class AiPage : SettingsPage
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(new Avatar(provider.Monogram, Palette.Parse(provider.Color), 44));
+        header.Children.Add(ProviderLogo.Make(provider, 44));
         var titles = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
         titles.Children.Add(Ui.Text(provider.Name, 16, p.Text1, semibold: true));
         titles.Children.Add(Kit.Body(provider.Tagline, 12.5, p.Text2));
@@ -262,6 +262,9 @@ public sealed class AiPage : SettingsPage
 
         switch (provider.Kind)
         {
+            case ProviderKind.Subscription when provider.Id == "opencode":
+                rows.Add(OpenCodeRow());
+                break;
             case ProviderKind.Subscription:
                 rows.Add(AccountRow(provider));
                 break;
@@ -343,6 +346,45 @@ public sealed class AiPage : SettingsPage
         return row;
     }
 
+    private Grid OpenCodeRow()
+    {
+        var local = OpenCodeBackend.LocateLocal();
+        string text;
+        UIElement action;
+        if (local is not null)
+        {
+            text = "Installed on this PC. The free models need no account; sign in to OpenCode Zen (opencode auth login) for the paid ones.";
+            action = Kit.Button("Sign in to Zen", "login", ChipStyle.Outline, () => StartOpenCodeLogin(local));
+        }
+        else if (S.Server.IsConfigured && S.Ai.OpenCodeOnServer)
+        {
+            text = $"Runs on {Host.Server.DisplayName}, where OpenCode is installed. Install it on this PC too for faster replies.";
+            action = Kit.Link("Get OpenCode", "https://opencode.ai/download", "download");
+        }
+        else
+        {
+            text = "Install the free OpenCode app on this PC (or on your server, then press Detect) to use its free models — no account or key needed.";
+            action = Kit.Link("Get OpenCode", "https://opencode.ai/download", "download");
+        }
+        return Kit.Row("redeem", "Free models", text, action);
+    }
+
+    private static void StartOpenCodeLogin(string exe)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("cmd.exe", $"/k \"\"{exe}\" auth login\"")
+            {
+                UseShellExecute = true,
+                WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            })?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Couldn't start OpenCode sign-in: {ex.Message}");
+        }
+    }
+
     private Grid KeyRow(ProviderInfo provider)
     {
         var settings = S.Ai.For(provider.Id);
@@ -401,7 +443,6 @@ public sealed class AiPage : SettingsPage
             titles.Children.Add(_note);
             Grid.SetColumn(titles, 1);
             top.Children.Add(titles);
-            if (provider.Id != "claude")
             {
                 var refresh = Kit.Button("Refresh", "refresh", ChipStyle.Ghost, () => _ = LoadAsync());
                 Grid.SetColumn(refresh, 2);
@@ -419,18 +460,18 @@ public sealed class AiPage : SettingsPage
                 Choose(_search.Text.Trim());
             };
             Children.Add(_search);
-            var scroll = new ScrollViewer { Content = _rows, MaxHeight = 320, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(46, 0, 0, 0) };
+            var scroll = new ScrollViewer { Content = _rows, Height = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(46, 0, 0, 0) };
             Children.Add(scroll);
             Render();
             var fetched = ModelCatalog.LastFetched(provider);
-            if (provider.Id != "claude" && ProviderCatalog.Status(provider, page.S).IsReady && (fetched is null || DateTimeOffset.Now - fetched > TimeSpan.FromHours(6))) _ = LoadAsync();
+            if (ProviderCatalog.Status(provider, page.S).IsReady && (fetched is null || DateTimeOffset.Now - fetched > TimeSpan.FromHours(6))) _ = LoadAsync();
         }
 
         private async Task LoadAsync()
         {
             if (_loading) return;
             _loading = true;
-            _note.Text = "Loading the latest models…";
+            _note.Text = "Updating the list…";
             try
             {
                 var models = await ModelCatalog.RefreshAsync(_provider, _page.S, _page.Host.Server.GetConnection, _page._cts.Token);
@@ -472,44 +513,16 @@ public sealed class AiPage : SettingsPage
             if (!_loading && string.IsNullOrEmpty(_note.Text))
             {
                 var fetched = ModelCatalog.LastFetched(_provider);
-                _note.Text = _provider.Id == "claude"
-                    ? "Aliases always point at Anthropic's latest version."
-                    : fetched is { } f ? $"{models.Count - 1} available · updated {f.LocalDateTime:g}" : "Press Refresh to load the list.";
+                _note.Text = fetched is { } f ? $"{models.Count(m => m.Id.Length > 0)} available · updated {f.LocalDateTime:g}"
+                    : models.Count > 1 ? $"{models.Count(m => m.Id.Length > 0)} known models · press Refresh for the provider's live list" : "Press Refresh to load the list.";
             }
             var shown = 0;
             foreach (var m in models)
             {
                 if (query.Length > 0 && !m.Name.Contains(query, StringComparison.OrdinalIgnoreCase) && !m.Id.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
-                if (++shown > 80) break;
-                var selected = m.Id == current;
-                var row = new Pressable { CornerRadius = new CornerRadius(12), Fill = selected ? p.AccentSoft : Colors.Transparent, MinHeight = 40 };
-                var grid = new Grid { ColumnSpacing = 10, Padding = new Thickness(12, 7, 12, 7) };
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-                var radio = new Border
-                {
-                    Width = 18,
-                    Height = 18,
-                    CornerRadius = new CornerRadius(9),
-                    BorderBrush = p.Brush(selected ? p.Accent : p.HairlineStrong),
-                    BorderThickness = new Thickness(selected ? 5 : 1.5),
-                    VerticalAlignment = VerticalAlignment.Center,
-                };
-                grid.Children.Add(radio);
-                var name = Ui.TipWhenTrimmed(Ui.Text(m.Name, 13, p.Text1, semibold: selected));
-                name.VerticalAlignment = VerticalAlignment.Center;
-                Grid.SetColumn(name, 1);
-                grid.Children.Add(name);
-                var detail = Ui.Text(m.Id.Length > 0 && m.Id != m.Name ? $"{m.Detail}{(m.Detail is null ? "" : " · ")}{m.Id}" : m.Detail ?? "", 11.5, p.Text3);
-                detail.VerticalAlignment = VerticalAlignment.Center;
-                detail.MaxWidth = 280;
-                Grid.SetColumn(detail, 2);
-                grid.Children.Add(detail);
-                row.SetContent(grid);
+                if (++shown > 300) break;
                 var id = m.Id;
-                row.Click += (_, _) => Choose(id.Length == 0 ? null : id);
-                _rows.Children.Add(row);
+                _rows.Children.Add(ModelRow.Make(m, _provider.Id, m.Id == current, () => Choose(id.Length == 0 ? null : id), showId: true));
             }
             if (shown == 0)
             {

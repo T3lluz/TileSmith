@@ -100,7 +100,43 @@ public static class WidgetExamples
                  {"type":"text","text":"{state}","size":"caption","color":"text3"}]},
                {"type":"progress","value":"{bat}","thickness":8,"color":{"if":"{bat} < 20","then":"error","else":"success"}}]}}
             """),
-        new("Several values from one JSON script (layout)", ["script", "json", "info", "several", "details", "gpu", "network", "ip", "wifi", "docker", "containers"], """
+        new("Weather with a forecast list (layout)", ["weather", "forecast", "temperature", "rain", "sunny", "outside", "degrees", "wind"], """
+            {"title":"Weather","icon":"partly_cloudy_day","size":"4x2","refreshSeconds":900,
+             "data":{"w":{"type":"weather.get","location":"Oslo"}},
+             "layout":{"type":"row","gap":16,"children":[
+               {"type":"column","gap":2,"valign":"center","children":[
+                 {"type":"row","gap":8,"children":[{"type":"icon","icon":"{w.icon}","size":34,"color":"accent"},{"type":"text","text":"{w.temp}{w.unit}","size":"display","weight":"semibold"}]},
+                 {"type":"text","text":"{w.condition}","size":"body","color":"text2"},
+                 {"type":"text","text":"{w.place} · H {w.high}° L {w.low}°","size":"caption","color":"text3"}]},
+               {"type":"list","items":"{w.days}","max":4,"direction":"row","gap":6,"flex":1,"template":
+                 {"type":"column","gap":4,"align":"center","children":[
+                   {"type":"text","text":"{item.day}","size":"caption","color":"text2","textAlign":"center"},
+                   {"type":"icon","icon":"{item.icon}","size":22,"align":"center"},
+                   {"type":"text","text":"{item.high}°","size":"label","weight":"semibold","textAlign":"center"}]}}]}}
+            """),
+        new("A live list: busiest apps (layout)", ["apps", "processes", "top", "busiest", "using", "list", "memory", "cpu", "task manager"], """
+            {"title":"Top apps","icon":"leaderboard","size":"2x2","refreshSeconds":3,
+             "data":{"top":{"type":"system.top","by":"cpu","count":4}},
+             "layout":{"type":"column","gap":6,"children":[
+               {"type":"row","gap":6,"children":[{"type":"icon","icon":"leaderboard","size":16,"color":"accent"},{"type":"text","text":"Busiest apps","size":"label","weight":"semibold","color":"text2"}]},
+               {"type":"list","items":"{top}","max":4,"gap":4,"empty":"Nothing busy","template":
+                 {"type":"row","gap":8,"children":[
+                   {"type":"text","text":"{item.name}","size":"label","flex":1},
+                   {"type":"text","text":"{item.cpu|round}%","size":"label","weight":"semibold","color":"accent"}]}}]}}
+            """),
+        new("Network and live speed (layout)", ["network", "wifi", "wi-fi", "speed", "bandwidth", "download", "upload", "ip", "internet", "ssid"], """
+            {"title":"Network","icon":"network_wifi","size":"4x1","refreshSeconds":2,
+             "data":{"net":{"type":"network.info"}},
+             "layout":{"type":"row","gap":12,"children":[
+               {"type":"icon","icon":{"if":"{net.type} == Wi-Fi","then":"wifi","else":"lan"},"size":24,"color":"accent"},
+               {"type":"column","flex":1,"valign":"center","children":[
+                 {"type":"text","text":{"if":"{net.ssid}","then":"{net.ssid}","else":"{net.name}"},"size":"body","weight":"semibold"},
+                 {"type":"text","text":"{net.ip}","size":"caption","color":"text2","mono":true}]},
+               {"type":"column","valign":"center","children":[
+                 {"type":"text","text":"↓ {net.down|bytes}/s","size":"label","textAlign":"end"},
+                 {"type":"text","text":"↑ {net.up|bytes}/s","size":"label","color":"text2","textAlign":"end"}]}]}}
+            """),
+        new("Several values from one JSON script (layout)", ["script", "json", "info", "several", "details", "gpu", "connection", "docker", "containers", "profile"], """
             {"title":"Network","icon":"lan","size":"4x1","refreshSeconds":30,
              "data":{"net":{"type":"shell.powershell","script":"$c = Get-NetConnectionProfile | Select-Object -First 1; $ip = (Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4Address.IPAddress; @{ name = $c.Name; ip = $ip; kind = [string]$c.InterfaceAlias } | ConvertTo-Json -Compress"}},
              "layout":{"type":"row","gap":12,"children":[

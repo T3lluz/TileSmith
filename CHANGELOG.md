@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0] - 2026-10-14
+
+- **Widget Studio**: describe a widget and chat with the AI while it appears next to the conversation — live, at its real size, with your real data. Ask for changes until it's right, step back to earlier versions, pick a size or edit the JSON, then add it to the panel. Every draft's data is checked and problems come with a "fix this" button.
+- **Liquid Glass**: the panel is now see-through glass over your blurred wallpaper, with bright edges, a soft sheen and a highlight that follows your pointer. Solid is still one click away in Settings › Look and feel.
+- **Free-form widgets by default**: the AI designs each tile from rows, columns, text, icons, gauges, graphs, lists and buttons instead of a few fixed control types. New lists repeat a row for each item (forecast days, busiest apps, containers).
+- **More built-in data, fewer broken widgets**: weather with a forecast (Open-Meteo, no key), network name/IP/live speed and the busiest apps join CPU, memory, disk, now playing and more. Scripts that feed tiles run on warm PowerShell hosts: faster, with no more timeouts from starting PowerShell every few seconds.
+- **Every model, with logos**: the model picker lists all of each provider's models (live, with names, dates, context and prices from models.dev), searches across providers and shows each provider's and model maker's logo. Claude Code now offers every Claude model, not just three.
+- **OpenCode's free models**: a new provider that uses the OpenCode app on this PC or your server — no account or key needed.
+- **Run as administrator** (Settings › General): one Windows prompt at start, then widgets and the AI can change system settings without asking every time.
+- **Calmer while working**: loading indicators keep a fixed size, values update in place and the panel no longer changes size when you click into the prompt — nothing jumps around.
+- Fixed: switches in Settings (like "Download in the background") sometimes ignored clicks; whole rows are now clickable.
+
 ## [0.3.0] - 2026-10-14
 
 - **Smoother open and close**: the panel grows out of the tray corner on one eased curve, and its shadow moves and fades with it instead of staying behind. Reopening mid-close turns around smoothly, the first frame never flashes the old panel, and the glass style lets Windows fade the blur away with the window.

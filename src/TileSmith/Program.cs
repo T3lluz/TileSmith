@@ -26,9 +26,28 @@ public static class Program
         }
         if (args.Contains("--settings")) return "settings:" + (After("--settings") ?? "");
         if (args.Contains("--gallery")) return "gallery";
+        if (args.Contains("--studio")) return "studio:" + (After("--studio") ?? "");
         if (After("--prompt") is { } prompt) return "prompt:" + prompt;
         if (args.Contains("--show")) return "show";
         return null;
+    }
+
+    /// <summary>Starts this exe again with administrator rights. False when the prompt was declined.</summary>
+    public static bool RelaunchElevated(IEnumerable<string> args)
+    {
+        var exe = Environment.ProcessPath;
+        if (exe is null) return false;
+        var arguments = string.Join(' ', args.Where(a => a is not "--elevated").Append("--elevated").Select(a => a.Contains(' ') ? $"\"{a}\"" : a));
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe, arguments) { UseShellExecute = true, Verb = "runas" })?.Dispose();
+            return true;
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            Log.Warn($"Starting as administrator was declined or failed: {ex.Message}");
+            return false;
+        }
     }
 
     [STAThread]
@@ -50,7 +69,19 @@ public static class Program
         Log.Init(AppPaths.LogsDir);
         Log.Info($"TileSmith {AppInfo.Version} starting (args: {string.Join(' ', args)})");
 
-        if (!SingleInstance.TryAcquire(waitForPrevious: args.Contains("--restarted") || args.Contains("--updated")))
+        // Run as administrator: start again elevated (one UAC prompt). If the prompt is declined, carry on normally.
+        if (!args.Contains("--no-elevate") && !Core.Native.Elevation.IsElevated && Core.Native.Elevation.CanElevate && Core.Settings.SettingsStore.Load().RunAsAdmin)
+        {
+            // already running (elevated): just hand it the command, no prompt
+            if (SingleInstance.IsRunning())
+            {
+                SingleInstance.SignalExisting(CommandFromArguments(args) ?? "show");
+                return 0;
+            }
+            if (RelaunchElevated(args)) return 0;
+        }
+
+        if (!SingleInstance.TryAcquire(waitForPrevious: args.Contains("--restarted") || args.Contains("--updated") || args.Contains("--elevated")))
         {
             SingleInstance.SignalExisting(CommandFromArguments(args) ?? "show");
             return 0;
@@ -82,9 +113,33 @@ internal static class SingleInstance
         (AppPaths.IsCustomDataDir ? "-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(AppPaths.DataDir.ToLowerInvariant())))[..8] : "");
     private static Mutex? _mutex;
 
+    /// <summary>Another TileSmith of this user is running (also when it runs elevated and its mutex can't be opened).</summary>
+    public static bool IsRunning()
+    {
+        try
+        {
+            if (!Mutex.TryOpenExisting($@"Local\{Name}-mutex", out var existing)) return false;
+            existing.Dispose();
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
     public static bool TryAcquire(bool waitForPrevious)
     {
-        _mutex = new Mutex(true, $@"Local\{Name}-mutex", out var created);
+        bool created;
+        try
+        {
+            _mutex = new Mutex(true, $@"Local\{Name}-mutex", out created);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // the running instance is elevated: it owns the mutex and we may not even open it
+            return false;
+        }
         if (created) return true;
         if (!waitForPrevious) return false;
         try
@@ -102,6 +157,7 @@ internal static class SingleInstance
     {
         try
         {
+            // the file alone is enough: the running instance watches it (an elevated one can't be signalled directly)
             File.WriteAllText(CommandFile, command);
             using var evt = EventWaitHandle.OpenExisting($@"Local\{Name}-show");
             evt.Set();
@@ -122,7 +178,8 @@ internal static class SingleInstance
         {
             while (evt.WaitOne())
             {
-                var command = "show";
+                // the file watcher below may have picked the command up already
+                string? command = null;
                 try
                 {
                     if (File.Exists(CommandFile))
@@ -132,10 +189,33 @@ internal static class SingleInstance
                     }
                 }
                 catch { }
-                onCommand(command);
+                if (!string.IsNullOrEmpty(command)) onCommand(command);
             }
         })
         { IsBackground = true, Name = "SingleInstanceListener" };
         thread.Start();
+
+        // a second launch that can't open our event (we run elevated, it doesn't) still drops its command file
+        Directory.CreateDirectory(AppPaths.DataDir);
+        _watcher = new FileSystemWatcher(AppPaths.DataDir, ".command") { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName };
+        void OnFile(object? sender, FileSystemEventArgs e)
+        {
+            Thread.Sleep(50); // let the writer finish
+            string? command = null;
+            try
+            {
+                if (!File.Exists(CommandFile)) return;
+                command = File.ReadAllText(CommandFile).Trim();
+                File.Delete(CommandFile);
+            }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            if (!string.IsNullOrEmpty(command)) onCommand(command);
+        }
+        _watcher.Created += OnFile;
+        _watcher.Changed += OnFile;
+        _watcher.EnableRaisingEvents = true;
     }
+
+    private static FileSystemWatcher? _watcher;
 }

@@ -22,6 +22,9 @@ public sealed class ActionCall
 
     public JsonObject Raw { get; }
     public string? Value { get; }
+
+    /// <summary>Run as a state/data query (read-only): scripts may use the warm PowerShell host.</summary>
+    public bool ReadOnly { get; init; }
     public ActionInfo Info { get; }
     public string Type => Info.Type;
 

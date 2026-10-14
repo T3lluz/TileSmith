@@ -5,10 +5,15 @@ using TileSmith.Core;
 
 namespace TileSmith.Services;
 
-/// <summary>Start with Windows via the per-user Run key (no admin needed, shows in Task Manager › Startup apps).</summary>
+/// <summary>
+/// Start with Windows: the per-user Run key (no admin needed, shows in Task Manager › Startup apps), or — when
+/// TileSmith runs as administrator — a logon task with highest privileges, since Windows won't start an elevated app
+/// from the Run key without a prompt.
+/// </summary>
 public static class StartupManager
 {
     private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string TaskName = "TileSmith (administrator)";
 
     public static bool IsEnabled()
     {
@@ -37,16 +42,47 @@ public static class StartupManager
         }
     }
 
-    public static void Apply(bool enabled)
+    public static void Apply(bool enabled, bool admin = false)
     {
         try
         {
+            // the logon task can only be created or removed with administrator rights
+            if (admin && enabled && Core.Native.Elevation.IsElevated)
+            {
+                if (CreateTask()) { Disable(); return; }
+            }
+            else if (Core.Native.Elevation.IsElevated)
+            {
+                DeleteTask();
+            }
             if (enabled) Enable(); else Disable();
         }
         catch (Exception ex)
         {
             Log.Warn($"Couldn't update startup entry: {ex.Message}");
         }
+    }
+
+    private static bool CreateTask()
+    {
+        var exe = Environment.ProcessPath;
+        if (exe is null) return false;
+        var user = $"{Environment.UserDomainName}\\{Environment.UserName}";
+        var result = RunSchtasks(["/Create", "/F", "/TN", TaskName, "/SC", "ONLOGON", "/RL", "HIGHEST", "/IT", "/RU", user, "/TR", $"\"{exe}\" --background"]);
+        if (result != 0) Log.Warn($"Couldn't create the startup task (schtasks exit {result})");
+        return result == 0;
+    }
+
+    private static void DeleteTask() => RunSchtasks(["/Delete", "/F", "/TN", TaskName]);
+
+    private static int RunSchtasks(string[] args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("schtasks.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = System.Diagnostics.Process.Start(psi);
+        if (p is null) return -1;
+        p.WaitForExit(10_000);
+        return p.HasExited ? p.ExitCode : -1;
     }
 }
 

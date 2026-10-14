@@ -13,6 +13,7 @@ public partial class App : Application
     private TrayIcon? _tray;
     private PanelWindow? _panel;
     private SettingsWindow? _settings;
+    private StudioWindow? _studio;
 
     public App()
     {
@@ -81,7 +82,9 @@ public partial class App : Application
         Host.SettingsChanged += ApplyHotkey;
 
         // only an installed copy registers itself (a dev build would point Windows at a temporary path)
-        if (Host.Updates.IsInstalled) StartupManager.Apply(Host.Settings.LaunchAtStartup);
+        if (Host.Updates.IsInstalled) StartupManager.Apply(Host.Settings.LaunchAtStartup, Host.Settings.RunAsAdmin);
+        if (Host.Settings.RunAsAdmin && !Core.Native.Elevation.IsElevated)
+            Notifications.Show("TileSmith is running without administrator rights", "The prompt was declined. Scripts that need admin rights will ask each time.");
         if (Host.Settings.KeepIconVisible)
         {
             // Explorer registers the icon's settings key a moment after it first appears.
@@ -117,6 +120,8 @@ public partial class App : Application
             detect.Start();
         }
         if (Program.Arguments.Contains("--pin")) _panel.Pin();
+        // model lists for the pickers (models.dev), refreshed at most once a day
+        _ = Core.Ai.ModelDirectory.EnsureFreshAsync(CancellationToken.None);
         var captureAt = Array.IndexOf(Program.Arguments, "--capture");
         if (captureAt >= 0 && captureAt + 1 < Program.Arguments.Length) StartCapture(Program.Arguments[captureAt + 1]);
         Log.Info("Ready");
@@ -159,7 +164,8 @@ public partial class App : Application
         return
         [
             new TrayMenuItem("Open TileSmith", () => _panel?.Show(), IsDefault: true),
-            new TrayMenuItem("Add a widget", () => { _panel?.Show(); _panel?.OpenGallery(); }),
+            new TrayMenuItem("Widget Studio", () => OpenStudio()),
+            new TrayMenuItem("Add from the gallery", () => { _panel?.Show(); _panel?.OpenGallery(); }),
             new TrayMenuItem("Settings", () => OpenSettings()),
             TrayMenuItem.Separator,
             updateItem,
@@ -184,6 +190,9 @@ public partial class App : Application
             case "gallery":
                 _panel?.Show();
                 _panel?.OpenGallery(focusSearch: true);
+                break;
+            case "studio":
+                OpenStudio(argument.Length > 0 ? argument : null);
                 break;
             case "prompt":
                 _panel?.Show(focusPrompt: true);
@@ -238,6 +247,22 @@ public partial class App : Application
 
     public void ShowPanel() => _panel?.Show();
 
+    /// <summary>Opens Widget Studio, optionally starting with a request and/or a panel widget to change.</summary>
+    public void OpenStudio(string? request = null, Core.Widgets.WidgetDefinition? widget = null)
+    {
+        if (_studio is null)
+        {
+            _studio = new StudioWindow(Host);
+            _studio.Closed += (_, _) => _studio = null;
+        }
+        _studio.Open(request, widget);
+    }
+
+    public bool IsStudioBusy => _studio?.IsRunning == true;
+
+    /// <summary>Marks a widget that's about to appear on the panel so it gets the "new" ring.</summary>
+    public void Celebrate(string id) => _panel?.CelebrateNext(id);
+
     /// <summary>Removes the tray icon before the process exits (otherwise a ghost icon lingers).</summary>
     public void PrepareForExit()
     {
@@ -245,6 +270,7 @@ public partial class App : Application
         {
             _tray?.Dispose();
             _tray = null;
+            Core.Actions.PowerShellHost.ShutdownAll();
             Notifications.Shutdown();
         }
         catch (Exception ex)
@@ -258,6 +284,25 @@ public partial class App : Application
         Log.Info("Quitting");
         PrepareForExit();
         Exit();
+    }
+
+    /// <summary>Restarts TileSmith with administrator rights. False when the prompt was declined (nothing changes).</summary>
+    public bool RestartElevated()
+    {
+        if (!Program.RelaunchElevated(["--show", "--restarted"])) return false;
+        PrepareForExit();
+        Environment.Exit(0);
+        return true;
+    }
+
+    /// <summary>Restarts TileSmith as a normal user (Explorer starts it, so it doesn't inherit the admin token).</summary>
+    public void RestartAsUser()
+    {
+        var exe = Environment.ProcessPath;
+        if (exe is null) return;
+        PrepareForExit();
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{exe}\"") { UseShellExecute = false })?.Dispose();
+        Environment.Exit(0);
     }
 
     /// <summary>Relaunches TileSmith (used after changing the theme).</summary>

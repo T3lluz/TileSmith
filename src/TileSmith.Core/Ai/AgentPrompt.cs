@@ -53,15 +53,23 @@ public static class AgentPrompt
               on from off, a slider gets a number, a choice's option values match, and every {placeholder} finds its field.
               Problems come back as "not saved"; fix exactly those. Test a new script with test_action before you save.
             - State queries must only READ (no side effects), finish within a second or two, and print one value — or
-              compact JSON (ConvertTo-Json -Compress) when a layout needs several values from one query.
+              compact JSON (ConvertTo-Json -Compress -Depth 4) when a layout needs several values from one query.
+            - Prefer the "Live data" built-ins (system.stats, weather.get, network.info, system.top, media.nowPlaying,
+              battery.get…) over scripts: they are instant and never break on PowerShell quirks.
+            - Scripts run in Windows PowerShell 5.1 — no PowerShell 7 syntax (no ?:, ??, &&, ||, -AsArray, ForEach-Object -Parallel).
+              Use Get-CimInstance (not Get-WmiObject), -ErrorAction SilentlyContinue for things that may be missing,
+              [math]::Round for numbers, and print with Write-Output (never Format-Table, Write-Host or Out-Host).
+              For arrays: ConvertTo-Json -Compress -InputObject @($items) so one item still prints an array.
+            - Plan for what this PC lacks (no battery, no Wi-Fi, an app that isn't running): show a sensible fallback with
+              a conditional value or "visible" instead of an error.
               For anything longer than a one-liner, write a .ps1 into the tools folder with write_file, test it, and call it
               from the widget: {"type": "shell.powershell", "script": "& \"$env:APPDATA\\TileSmith\\tools\\name.ps1\" -Arg x"}
             - Check facts on this PC instead of guessing (paths, installed apps, devices). Never break things: no destructive
               commands unless the user explicitly asked for exactly that.
-            - Pick the form: a standard control (toggle, slider, choice, button, status) for a plain setting or action — they
-              look like Windows/Android quick settings and need no styling. A layout widget (see "Layout widgets") when the
-              tile should show richer information or a custom look: several values, gauges, history lines, cover art,
-              countdowns, counters, status colours, buttons arranged freely. When the user asks for a specific look, use a layout.
+            - Design the tile. A layout widget (see "Layout widgets") is the default: you decide what it shows and how —
+              values, gauges, history lines, lists, cover art, countdowns, status colours, buttons arranged freely. A bare
+              standard control (one toggle, slider, choice or button) is fine for a plain switch or one-tap action.
+              Make it look intentional: one clear focal value, calm secondary text, consistent spacing.
             - Choose the size yourself unless the user said one, using the exact sizes under "Tile sizes" below: one toggle or
               button → "2x1" (or "1x1" for a plain one-tap action), a slider → "4x1" (or "2x1" next to another), a choice → the
               narrowest one-row size its options fit in, several controls → a "2x2"/"4x2" card, "4x3" only when it really needs it.

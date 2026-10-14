@@ -34,6 +34,8 @@ public sealed class AboutPage : SettingsPage
         Section("Links", null,
             Kit.Row("code", "Source code and releases", "github.com/T3lluz/TileSmith", Kit.Link("Open", AppInfo.RepoUrl)),
             Kit.Row("bug_report", "Report a problem or suggest an idea", null, Kit.Link("Open", AppInfo.RepoUrl + "/issues")),
+            Kit.Row("partly_cloudy_day", "Weather data by Open-Meteo.com", "Used by weather widgets (CC BY 4.0). Model details from models.dev; logos from LobeHub Icons.",
+                Kit.Link("Open", "https://open-meteo.com")),
             Kit.Row("description", "Logs", "Useful when something doesn't work.", Kit.Button("Open folder", "folder_open", ChipStyle.Outline, () =>
             {
                 Directory.CreateDirectory(AppPaths.LogsDir);

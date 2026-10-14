@@ -13,8 +13,8 @@ public sealed class AppSettings
     public ServerProfile Server { get; set; } = new();
     public AiSettings Ai { get; set; } = new();
 
-    /// <summary>solid = Android-style rounded panel (default) · glass = Windows acrylic.</summary>
-    public string PanelStyle { get; set; } = "solid";
+    /// <summary>glass = Liquid Glass (default: see-through, blurred, glass tiles) · solid = opaque rounded panel.</summary>
+    public string PanelStyle { get; set; } = "glass";
 
     /// <summary>steel (DailyDash) | windows | blue | teal | green | amber | coral | pink | violet | #RRGGBB</summary>
     public string Accent { get; set; } = "steel";
@@ -26,6 +26,9 @@ public sealed class AppSettings
     public string Theme { get; set; } = "system";
 
     public bool LaunchAtStartup { get; set; } = true;
+
+    /// <summary>Start TileSmith with administrator rights (one UAC prompt at start; admin scripts then run without one).</summary>
+    public bool RunAsAdmin { get; set; }
     public string Hotkey { get; set; } = "Win+Shift+Q";
 
     /// <summary>True once the user picked a shortcut themselves (then we never swap it automatically).</summary>
@@ -45,7 +48,8 @@ public sealed class AppSettings
     /// <summary>Prompts sent from the panel, newest first (Up arrow in the composer recalls them).</summary>
     public List<string> PromptHistory { get; set; } = [];
 
-    public const int CurrentVersion = 2;
+    /// <summary>3 = Liquid Glass became the panel's default look (0.4.0).</summary>
+    public const int CurrentVersion = 3;
 }
 
 public sealed class ServerProfile
@@ -91,6 +95,9 @@ public sealed class AiSettings
 
     /// <summary>When the chosen AI can't be reached (offline, signed out, rate limited), try the next ready one.</summary>
     public bool AutoFallback { get; set; } = true;
+
+    /// <summary>The server has the opencode CLI (found by Detect): OpenCode's free models can run there.</summary>
+    public bool OpenCodeOnServer { get; set; }
 
     /// <summary>Hermes's own default model and the OpenAI-compatible endpoint it uses (found by Detect).</summary>
     public string? HermesDefaultModel { get; set; }
@@ -219,6 +226,12 @@ public static class SettingsStore
                 ai.LocalModel = null;
             }
             settings.Version = 2;
+        }
+        if (settings.Version < 3)
+        {
+            // 0.4 redesigned the panel around Liquid Glass; everyone gets it once (Solid is one click away)
+            settings.PanelStyle = "glass";
+            settings.Version = 3;
         }
         return settings;
     }

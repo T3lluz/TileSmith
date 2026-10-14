@@ -55,6 +55,15 @@ internal sealed record ToolCall(string Tool, JsonObject Args);
 public sealed class WidgetAgent(IAiBackend backend, ActionEngine actions, IAgentHost host, Func<string> deviceContext)
 {
     public int MaxTurns { get; init; } = 14;
+
+    /// <summary>
+    /// The conversation so far (Widget Studio): when given, each run continues it instead of starting over, so the
+    /// model remembers what was built and why. Filled in as the run goes.
+    /// </summary>
+    public List<AiMessage>? Conversation { get; init; }
+
+    /// <summary>Extra system instructions for this run (e.g. that the user sees a live preview).</summary>
+    public string? Context { get; init; }
     private const int MaxToolOutput = 6000;
 
     /// <summary>Run the widget's queries before saving and send problems back (see <see cref="WidgetVerifier"/>).</summary>
@@ -69,12 +78,15 @@ public sealed class WidgetAgent(IAiBackend backend, ActionEngine actions, IAgent
         var sw = Stopwatch.StartNew();
         _reported.Clear();
         host.OnStatus("Looking at your PC…");
-        var context = await Task.Run(deviceContext, ct);
-        var messages = new List<AiMessage>
+        var messages = Conversation ?? [];
+        if (messages.Count == 0)
         {
-            AiMessage.System(AgentPrompt.System(context, host.GetWidgets(), request)),
-            AiMessage.User(AgentPrompt.Task(request, sizePreference, editing)),
-        };
+            var context = await Task.Run(deviceContext, ct);
+            var system = AgentPrompt.System(context, host.GetWidgets(), request);
+            if (!string.IsNullOrWhiteSpace(Context)) system += "\n\n# Where you are\n" + Context;
+            messages.Add(AiMessage.System(system));
+        }
+        messages.Add(AiMessage.User(AgentPrompt.Task(request, sizePreference, editing)));
 
         var saved = new List<WidgetDefinition>();
         var formatErrors = 0;
@@ -220,7 +232,7 @@ public sealed class WidgetAgent(IAiBackend backend, ActionEngine actions, IAgent
                 if (errors.Count > 0) return Finish(step, "invalid action: " + string.Join("; ", errors), false);
                 try
                 {
-                    var output = await actions.RunAsync(action, value, ct);
+                    var output = info.IsQuery && value is null ? await actions.QueryAsync(action, ct) : await actions.RunAsync(action, value, ct);
                     return Finish(step, "ok" + (string.IsNullOrEmpty(output) ? "" : ", output: " + Trim(output, MaxToolOutput)), true);
                 }
                 catch (ActionException ex)

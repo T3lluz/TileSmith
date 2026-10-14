@@ -189,6 +189,7 @@ public static partial class EngineDetector
     public static void Apply(DetectedEngines found, AiSettings ai)
     {
         ai.DetectedEngine = found.Recommended;
+        ai.OpenCodeOnServer = found.OtherClis.Contains("opencode");
         ai.DetectedSummary = found.Summary;
         ai.HermesQuietFlag = found.HermesQuietFlag;
         ai.HermesSupportsQueryFile = found.HermesQueryFile;

@@ -158,7 +158,6 @@ public sealed class TileBoard : Grid
     private readonly DispatcherTimer _scrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly Pressable _addTile;
     private readonly Rectangle _placeholder;
-    private Grid? _ghost;
 
     private WidgetTile? _pressTile;
     private Point _pressPoint;
@@ -253,11 +252,6 @@ public sealed class TileBoard : Grid
         foreach (var tile in tiles) AddTileCore(tile);
         _panel.Children.Add(_addTile);
         _panel.Order.Add(_addTile);
-        if (_ghost is not null)
-        {
-            _panel.Children.Add(_ghost);
-            _panel.Order.Add(_ghost);
-        }
     }
 
     private void AddTileCore(WidgetTile tile)
@@ -267,41 +261,6 @@ public sealed class TileBoard : Grid
         tile.ResizeHandlePressed += OnResizePressed;
         _panel.Children.Add(tile);
         _panel.Order.Add(tile);
-    }
-
-    // ── Ghost tile shown while the AI builds ─────────────────────────────────────────
-
-    public void ShowGhost(CellSize size)
-    {
-        HideGhost();
-        var p = Palette.Current;
-        _ghost = new Grid();
-        BoardPanel.SetCells(_ghost, size);
-        _ghost.Children.Add(new Rectangle
-        {
-            RadiusX = WidgetTile.Radius,
-            RadiusY = WidgetTile.Radius,
-            Stroke = p.Brush(Palette.WithAlpha(p.Accent, 0.55)),
-            StrokeThickness = 1.5,
-            StrokeDashArray = [5, 4],
-            Fill = p.Brush(Palette.WithAlpha(p.Accent, 0.06)),
-        });
-        var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Spacing = 8 };
-        stack.Children.Add(new WorkingScanner(5, 2) { HorizontalAlignment = HorizontalAlignment.Center, Color = p.Accent });
-        stack.Children.Add(Ui.Text("Building…", 11.5, p.Text2));
-        _ghost.Children.Add(stack);
-        _panel.Children.Add(_ghost);
-        _panel.Order.Add(_ghost);
-        Motion.Enter(_ghost, 8);
-        Motion.Breathe(_ghost.Children[0], 0.45f);
-    }
-
-    public void HideGhost()
-    {
-        if (_ghost is null) return;
-        _panel.Children.Remove(_ghost);
-        _panel.Order.Remove(_ghost);
-        _ghost = null;
     }
 
     private Pressable BuildAddTile()
