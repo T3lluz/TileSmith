@@ -162,9 +162,9 @@ public sealed class ActionEngine
     /// <summary>"select": pick one field out of JSON output ("cpu", "items[0].name").</summary>
     internal static string Select(string output, string path, string type)
     {
-        if (!TileSmith.Core.Widgets.JsonExtractorLite.TryParse(output, out var root))
+        if (!Tiles.JsonPath.TryParse(output, out var root))
             throw new ActionException($"{type}: \"select\" needs JSON output, but got \"{(output.Length > 80 ? output[..80] + "…" : output)}\".");
-        var node = TileSmith.Core.Widgets.Bindings.Navigate(root, path)
+        var node = Tiles.JsonPath.Navigate(root, path)
                    ?? throw new ActionException($"{type}: the output has no \"{path}\".");
         return node.GetValueKind() switch
         {

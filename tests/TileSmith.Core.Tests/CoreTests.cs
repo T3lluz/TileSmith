@@ -3,7 +3,7 @@ using TileSmith.Core;
 using TileSmith.Core.Actions;
 using TileSmith.Core.Ai;
 using TileSmith.Core.Remote;
-using TileSmith.Core.Widgets;
+using TileSmith.Core.Tiles;
 using Xunit;
 
 namespace TileSmith.Core.Tests;
@@ -32,98 +32,37 @@ public class SshTargetTests
     public void Rejects_garbage(string input) => Assert.False(SshTarget.TryParse(input, out _, out _));
 }
 
-public class AgentProtocolTests
+public class JsonExtractorTests
 {
     [Fact]
-    public void Parses_fenced_tool_call_with_chatter_and_ansi()
+    public void Finds_fenced_json_among_chatter_and_ansi()
     {
-        var reply = "\u001b[1mHermes\u001b[0m  ╭─ thinking ─╮\nSure!\n```json\n{\"say\":\"Checking\",\"tool\":\"powershell\",\"args\":{\"script\":\"Get-Date\"}}\n```\nsession: abc";
-        var (say, calls) = WidgetAgent.Parse(reply);
-        Assert.Equal("Checking", say);
-        var call = Assert.Single(calls);
-        Assert.Equal("powershell", call.Tool);
-        Assert.Equal("Get-Date", call.Args["script"]!.GetValue<string>());
+        var reply = "\u001b[1mHermes\u001b[0m  ╭─ thinking ─╮\nSure!\n```json\n{\"reply\":\"Done\",\"design\":{\"rows\":[]}}\n```\nsession: abc";
+        var node = Assert.IsType<JsonObject>(JsonExtractor.Candidates(reply).First());
+        Assert.Equal("Done", node["reply"]!.GetValue<string>());
     }
 
     [Fact]
-    public void Parses_batched_calls_and_hermes_tool_call_tags()
-    {
-        var (_, batch) = WidgetAgent.Parse("{\"say\":\"x\",\"calls\":[{\"tool\":\"read_file\",\"args\":{\"path\":\"a\"}},{\"tool\":\"list_directory\",\"args\":{\"path\":\"b\"}}]}");
-        Assert.Equal(2, batch.Count);
-
-        var (_, tagged) = WidgetAgent.Parse("<tool_call>{\"name\": \"finish\", \"arguments\": {\"message\": \"ok\"}}</tool_call>");
-        Assert.Equal("finish", Assert.Single(tagged).Tool);
-    }
+    public void Finds_bare_and_tagged_json() =>
+        Assert.Equal(2, JsonExtractor.Candidates("<tool_call>{\"a\": 1}</tool_call> then {\"b\": [1, 2]}").Count());
 
     [Fact]
-    public void Bare_widget_json_becomes_save_widget()
-    {
-        var (_, calls) = WidgetAgent.Parse("{\"title\":\"X\",\"size\":\"small\",\"controls\":[{\"type\":\"button\",\"label\":\"Go\",\"action\":{\"type\":\"power.action\",\"action\":\"lock\"}}]}");
-        Assert.Equal("save_widget", Assert.Single(calls).Tool);
-    }
-
-    [Fact]
-    public void Garbage_yields_no_calls() => Assert.Empty(WidgetAgent.Parse("I can't do that.").Calls);
-}
-
-public class ValidatorTests
-{
-    private static WidgetDefinition Parse(string json) => WidgetDefinition.FromJson(json);
-
-    [Fact]
-    public void Resolution_widget_is_valid()
-    {
-        var w = Parse("""
-            {"title":"Resolution","subtitle":"Built-in display","icon":"Display","size":"wide","controls":[{"type":"choice","state":{"type":"display.getResolution","display":"internal"},
-             "options":[{"label":"2560 × 1440","value":"2560x1440","action":{"type":"display.setResolution","width":2560,"height":1440,"display":"internal"}},
-                        {"label":"1920 × 1200","value":"1920x1200","action":{"type":"display.setResolution","width":"1920","height":1200,"display":"internal"}}]}]}
-            """);
-        var result = WidgetValidator.Validate(w);
-        Assert.True(result.IsValid, string.Join("; ", result.Errors));
-        Assert.StartsWith("w_", w.Id);
-    }
-
-    [Fact]
-    public void Synonyms_and_aliases_are_normalized()
-    {
-        var w = Parse("""{"title":"T","size":"large","controls":[{"type":"segmented","options":[{"label":"a","action":{"type":"powershell","script":"1"}},{"label":"b","action":{"type":"url","url":"https://x"}}]}]}""");
-        var result = WidgetValidator.Validate(w);
-        Assert.True(result.IsValid, string.Join("; ", result.Errors));
-        Assert.Equal("4x2", w.Size);
-        Assert.Equal("choice", w.Controls[0].Type);
-        Assert.Equal("shell.powershell", w.Controls[0].Options![0].Action!["type"]!.GetValue<string>());
-    }
-
-    [Fact]
-    public void Reports_useful_errors()
-    {
-        var w = Parse("""{"title":"","controls":[{"type":"slider","action":{"type":"audio.setVolume","level":50}},{"type":"toggle","label":"x","state":{"type":"theme.set","mode":"dark"},"on":{"type":"nope"},"off":{"type":"theme.set","mode":"purple"}}]}""");
-        var errors = WidgetValidator.Validate(w).Errors;
-        Assert.Contains(errors, e => e.Contains("title"));
-        Assert.Contains(errors, e => e.Contains("{value}"));
-        Assert.Contains(errors, e => e.Contains("doesn't return a value"));
-        Assert.Contains(errors, e => e.Contains("\"nope\""));
-        Assert.Contains(errors, e => e.Contains("must be one of"));
-    }
+    public void Garbage_yields_nothing() => Assert.Empty(JsonExtractor.Candidates("I can't do that."));
 
     [Theory]
-    [InlineData("1x1", "slider", "2x1")]   // too small for a slider: raised to its minimum
-    [InlineData("small", "toggle", "2x1")] // legacy names still work
-    [InlineData("wide", "toggle", "4x1")]
-    [InlineData(null, "slider", "4x1")]    // no size: sensible default
-    [InlineData("2×2", "toggle", "2x2")]
-    public void Sizes_are_normalized(string? size, string type, string expected)
+    [InlineData("data.items[0].price", "4.2")]
+    [InlineData("data.items.1.price", "7")]
+    [InlineData("data.items[-1].name", "b")]
+    [InlineData("data.missing", null)]
+    public void Json_paths_navigate(string path, string? expected)
     {
-        var control = type == "slider"
-            ? """{"type":"slider","action":{"type":"audio.setVolume","level":"{value}"}}"""
-            : """{"type":"toggle","label":"x","state":{"type":"theme.get"},"on":{"type":"theme.set","mode":"dark"},"off":{"type":"theme.set","mode":"light"}}""";
-        var sizeJson = size is null ? "" : $"\"size\":\"{size}\",";
-        var w = Parse($$"""{"title":"V",{{sizeJson}}"controls":[{{control}}]}""");
-        var result = WidgetValidator.Validate(w);
-        Assert.True(result.IsValid, string.Join("; ", result.Errors));
-        Assert.Equal(expected, w.Size);
+        Assert.True(JsonPath.TryParse("""{"data":{"items":[{"name":"a","price":4.2},{"name":"b","price":7}]}}""", out var root));
+        Assert.Equal(expected, JsonPath.Text(JsonPath.Navigate(root, path)));
     }
+}
 
+public class IconTests
+{
     [Theory]
     [InlineData("wifi", "wifi")]
     [InlineData("DarkMode", "dark_mode")]
@@ -136,13 +75,15 @@ public class ValidatorTests
     public void Icon_catalog_is_embedded() => Assert.True(Icons.Count > 3000);
 
     [Fact]
-    public void Default_widgets_are_valid()
+    public void Every_icon_the_app_names_exists()
     {
-        foreach (var w in WidgetStore.Defaults())
-        {
-            var r = WidgetValidator.Validate(w);
-            Assert.True(r.IsValid, w.Title + ": " + string.Join("; ", r.Errors));
-        }
+        var named = TileSources.All.Select(s => s.Icon)
+            .Concat(TileSources.All.Select(s => s.Sample.Icon).OfType<string>())
+            .Concat(TileStarters.All.SelectMany(s => s.Design.Blocks).Select(b => b.Icon).OfType<string>())
+            .Concat(["wifi_off", "bluetooth_disabled", "light_mode", "volume_mute", "volume_down", "mic_off", "brightness_low", "brightness_medium",
+                     "brightness_high", "eco", "balance", "vpn_key_off", "battery_charging_full", "battery_3_bar", "cloud_off", "umbrella", "wb_sunny",
+                     "skip_previous", "skip_next", "play_arrow", "pause", "auto_awesome", "key", "warning", "check_circle"]);
+        foreach (var icon in named.Distinct()) Assert.True(Icons.IsKnown(icon), icon);
     }
 }
 
@@ -177,13 +118,6 @@ public class EngineTests
     public void Every_catalog_action_has_a_handler() => _ = new ActionEngine(new NullHost());
 
     [Fact]
-    public void Prompt_mentions_every_action()
-    {
-        var prompt = AgentPrompt.System("- OS: test", []);
-        foreach (var a in ActionCatalog.All) Assert.Contains(a.Type, prompt);
-    }
-
-    [Fact]
     public async Task Queries_run_on_this_pc()
     {
         var engine = new ActionEngine(new NullHost());
@@ -194,6 +128,10 @@ public class EngineTests
         var ps = await engine.RunAsync(new JsonObject { ["type"] = "shell.powershell", ["script"] = "Write-Output (6*7)" }, null, TestContext.Current.CancellationToken);
         Assert.Equal("42", ps);
     }
+
+    [Fact]
+    public void Select_reads_a_field_of_json_output() =>
+        Assert.Equal("b", ActionEngine.Select("""{"items":[{"name":"a"},{"name":"b"}]}""", "items[1].name", "test"));
 
     [Fact]
     public void Device_context_lists_display_modes()

@@ -11,7 +11,7 @@ using TileSmith.Controls;
 using TileSmith.Core;
 using TileSmith.Core.Ai;
 using TileSmith.Core.Remote;
-using TileSmith.Core.Widgets;
+using TileSmith.Core.Tiles;
 using TileSmith.Interop;
 using TileSmith.Services;
 using TileSmith.Theme;
@@ -96,7 +96,7 @@ public sealed partial class PanelWindow : Window
         ConfigureWindow();
 
         Activated += OnActivated;
-        _host.Widgets.CollectionChanged += OnWidgetsChanged;
+        _host.Library.Changed += OnLibraryChanged;
         _host.Server.Changed += UpdateStatus;
         _host.Updates.Changed += UpdateBanners;
         _host.SettingsChanged += OnSettingsChanged;
@@ -117,7 +117,10 @@ public sealed partial class PanelWindow : Window
 
     // ── Dev capture (--capture) ─────────────────────────────────────────────────────
 
-    internal static readonly string[] CaptureStates = ["default", "edit", "gallery", "models"];
+    internal static readonly string[] CaptureStates = ["default", "edit", "gallery", "starters-1", "starters-2", "starters-3", "designs", "showcase"];
+
+    /// <summary>Capture only: designs shown on the board instead of the panel's own.</summary>
+    private IReadOnlyList<TileDesign>? _captureDesigns;
 
     internal UIElement CaptureRoot => Root;
 
@@ -128,16 +131,32 @@ public sealed partial class PanelWindow : Window
         CloseGallery();
         _boardScroll.Content = _boardStack;
         SetEditMode(state == "edit");
+        _captureDesigns = null;
         switch (state)
         {
             case "gallery":
                 OpenGallery();
                 break;
-            case "models":
-                // flyouts aren't captured: show the picker inline instead
-                _boardScroll.Content = new ModelPicker(_host, (_, _) => { }, () => { });
+            case var s when s.StartsWith("starters-", StringComparison.Ordinal):
+                // every ready-made design, a third at a time, as the panel draws them with this PC's values
+                var all = TileStarters.All.Where(x => x.Category != "Shortcuts").Select(TileStarters.Instantiate).ToList();
+                var part = int.Parse(s[9..]) - 1;
+                var size = (all.Count + 2) / 3;
+                _captureDesigns = all.Skip(part * size).Take(size).ToList();
+                break;
+            case "showcase":
+                // the README's picture
+                _captureDesigns = new[] { "quick", "volume", "pulse", "player", "shortcuts" }
+                    .Select(TileStarters.ById).OfType<TileStarters.Starter>().Select(TileStarters.Instantiate).ToList();
+                break;
+            case "designs":
+                // designs saved elsewhere (TILESMITH_CAPTURE_DESIGNS: a JSON array), e.g. what a real AI made in the tests
+                var file = Environment.GetEnvironmentVariable("TILESMITH_CAPTURE_DESIGNS");
+                _captureDesigns = file is { Length: > 0 } && File.Exists(file) ? TileCodec.ParseList(File.ReadAllText(file)) : [];
                 break;
         }
+        LoadTiles();
+        foreach (var tile in _board.Tiles) _ = tile.RefreshAsync(force: true);
         QueueResize();
     }
 
@@ -244,7 +263,7 @@ public sealed partial class PanelWindow : Window
 
         _board = new TileBoard { HorizontalAlignment = HorizontalAlignment.Center };
         _board.OrderChanged += OnOrderChanged;
-        _board.Resized += OnResized;
+        _board.Resized += Resize;
         _board.AddRequested += () => OpenGallery();
         _board.GestureEnded += QueueResize;
         _emptyState = BuildEmptyState();
@@ -471,33 +490,50 @@ public sealed partial class PanelWindow : Window
 
     // ── Tiles ───────────────────────────────────────────────────────────────────────
 
-    private void OnWidgetsChanged(object? sender, NotifyCollectionChangedEventArgs e) => LoadTiles();
+    private void OnLibraryChanged(string? id)
+    {
+        if (_board is null) return;
+        // a design that is already on the board just redraws; anything else (added, removed, moved) reloads the board
+        var tile = id is null ? null : _board.Tiles.FirstOrDefault(t => t.Design.Id == id);
+        var design = id is null ? null : _host.Library.Find(id);
+        var sameOrder = _board.Tiles.Select(t => t.Design.Id).SequenceEqual(_host.Library.Panel.Select(d => d.Id));
+        if (tile is not null && design is not null && sameOrder)
+        {
+            tile.SetDesign(design);
+            if (_celebrate.Remove(design.Id)) tile.Celebrate();
+            if (_visible) _ = tile.RefreshAsync();
+            ApplyColumns();
+            QueueResize();
+            return;
+        }
+        if (!sameOrder || id is null) LoadTiles();
+    }
 
     private void LoadTiles()
     {
         if (_board is null) return;
         ApplyPanelPalette();
         foreach (var old in _board.Tiles) old.StopPolling();
-        var tiles = new List<WidgetTile>();
-        foreach (var widget in _host.Widgets)
+        var tiles = new List<DesignTile>();
+        foreach (var design in _captureDesigns ?? _host.Library.Panel)
         {
             try
             {
-                var tile = new WidgetTile(widget, _host);
+                var tile = new DesignTile(design, _host);
                 tile.Command += OnTileCommand;
-                tile.ResizeRequested += (t, size) => _host.ResizeWidget(t.Widget.Id, size.ToString());
-                tile.Failed += (t, message) => ShowNotice($"{t.Widget.Title}: {message}", warning: true, "Fix with AI", () =>
+                tile.ResizeRequested += Resize;
+                tile.Failed += (t, message) => ShowNotice($"{t.Design.Name}: {message}", warning: true, "Fix with AI", () =>
                 {
                     HideNow();
-                    App.Current.OpenStudio($"This widget doesn't work. Using it fails with: \"{message}\". Find out why on this PC (test its actions), fix it and keep everything else as it is.", t.Widget);
+                    App.Current.OpenStudio($"Using this widget fails with: \"{message}\". Fix it and keep everything else as it is.", t.Design);
                 });
                 tiles.Add(tile);
                 if (_visible) { _ = tile.RefreshAsync(); tile.StartPolling(); }
-                if (_celebrate.Remove(widget.Id)) tile.Loaded += (_, _) => tile.Celebrate();
+                if (_celebrate.Remove(design.Id)) tile.Loaded += (_, _) => tile.Celebrate();
             }
             catch (Exception ex)
             {
-                Log.Error($"Couldn't render widget \"{widget.Title}\"", ex);
+                Log.Error($"Couldn't draw widget \"{design.Name}\"", ex);
             }
         }
         _board.Load(tiles);
@@ -518,61 +554,53 @@ public sealed partial class PanelWindow : Window
         else
         {
             // automatic: 4 columns (≈4:3 panel), widening to 5 once 4 would need many rows
-            var cells = _host.Widgets.Sum(w => { var c = w.Cells; return Math.Min(c.W, 4) * c.H; });
+            var cells = _host.Library.Panel.Sum(d => Math.Min(d.Size.Cols, 4) * d.Size.Rows);
             _board.Columns = cells > 4 * 6 ? 5 : 4;
         }
         if (_modelText is not null) _modelText.MaxWidth = _board.Columns <= 3 ? 84 : 130;
         if (_date is not null) _date.Visibility = _board.Columns <= 3 ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    private void OnOrderChanged(IReadOnlyList<string> ids)
+    private void OnOrderChanged(IReadOnlyList<string> ids) => _host.Library.Reorder(ids);
+
+    private void Resize(DesignTile tile, TileSize size)
     {
-        var ordered = ids.Select(id => _host.Widgets.FirstOrDefault(w => w.Id == id)).OfType<WidgetDefinition>().ToList();
-        if (ordered.Count != _host.Widgets.Count || ordered.SequenceEqual(_host.Widgets)) return;
-        _host.Widgets.CollectionChanged -= OnWidgetsChanged;
-        for (var i = 0; i < ordered.Count; i++)
-        {
-            var current = _host.Widgets.IndexOf(ordered[i]);
-            if (current != i) _host.Widgets.Move(current, i);
-        }
-        _host.Widgets.CollectionChanged += OnWidgetsChanged;
-        _host.SaveWidgets();
+        var before = tile.Design;
+        var (resized, dropped) = TileRules.Reflow(before, size);
+        _host.Library.Upsert(resized);
+        if (dropped > 0)
+            ShowNotice($"{dropped} block{(dropped == 1 ? "" : "s")} of “{before.Name}” didn't fit a {size.Label.ToLowerInvariant()} tile.", warning: false, "Undo", () => _host.Library.Upsert(before));
     }
 
-    private void OnResized(WidgetTile tile, CellSize size) => _host.ResizeWidget(tile.Widget.Id, size.ToString());
-
-    private async void OnTileCommand(WidgetTile tile, TileCommand command)
+    private async void OnTileCommand(DesignTile tile, TileCommand command)
     {
-        var widget = tile.Widget;
+        var design = tile.Design;
         switch (command)
         {
             case TileCommand.EditWithAi:
                 HideNow();
-                App.Current.OpenStudio(null, widget);
+                App.Current.OpenStudio(null, design);
                 break;
             case TileCommand.EditJson:
-                await EditJsonAsync(widget);
+                await EditJsonAsync(design);
                 break;
             case TileCommand.Duplicate:
-                var copy = widget.Clone();
-                copy.Id = WidgetDefinition.NewId();
+                var copy = _host.Library.Duplicate(design);
                 _celebrate.Add(copy.Id);
-                _host.InsertWidget(_host.IndexOf(widget.Id) + 1, copy);
                 break;
             case TileCommand.Remove:
-                var index = _host.IndexOf(widget.Id);
-                var removed = _host.RemoveWidget(widget.Id);
-                if (removed is not null) ShowNotice($"Removed “{removed.Title}”", warning: false, "Undo", () => _host.InsertWidget(index, removed));
+                var index = _host.Library.Unplace(design.Id);
+                if (index >= 0) ShowNotice($"Took “{design.Name}” off the panel. It stays in Widget Studio.", warning: false, "Undo", () => _host.Library.Place(design, index));
                 break;
         }
     }
 
-    private async Task EditJsonAsync(WidgetDefinition widget)
+    private async Task EditJsonAsync(TileDesign design)
     {
         var p = Palette.Current;
         var box = new TextBox
         {
-            Text = widget.ToJson(),
+            Text = TileCodec.ToJson(design, withChat: false).ToJsonString(Core.JsonDefaults.Options),
             AcceptsReturn = true,
             TextWrapping = TextWrapping.NoWrap,
             FontFamily = new FontFamily("Cascadia Mono, Consolas"),
@@ -586,7 +614,7 @@ public sealed partial class PanelWindow : Window
         content.Children.Add(error);
         var dialog = new ContentDialog
         {
-            Title = $"Edit “{widget.Title}”",
+            Title = $"Edit “{design.Name}”",
             Content = content,
             PrimaryButtonText = "Save",
             CloseButtonText = "Cancel",
@@ -598,21 +626,16 @@ public sealed partial class PanelWindow : Window
         {
             try
             {
-                var edited = WidgetDefinition.FromJson(box.Text);
-                edited.Id = widget.Id;
-                var result = WidgetValidator.Validate(edited);
-                if (!result.IsValid)
-                {
-                    error.Text = string.Join("\n", result.Errors);
-                    e.Cancel = true;
-                    return;
-                }
+                if (System.Text.Json.Nodes.JsonNode.Parse(box.Text, documentOptions: Core.JsonDefaults.DocumentOptions) is not System.Text.Json.Nodes.JsonObject o)
+                    throw new FormatException("It must be one JSON object.");
+                var edited = TileCodec.Parse(o, design) with { Id = design.Id, Chat = design.Chat };
+                if (edited.Blocks.Count == 0) throw new FormatException("The design has no blocks it can show.");
                 _celebrate.Add(edited.Id);
-                _host.UpsertWidget(edited);
+                _host.Library.Upsert(edited);
             }
             catch (Exception ex)
             {
-                error.Text = "That isn't valid JSON: " + ex.Message;
+                error.Text = "That isn't a design TileSmith can read: " + ex.Message;
                 e.Cancel = true;
             }
         };
@@ -664,10 +687,14 @@ public sealed partial class PanelWindow : Window
     {
         ApplyPanelPalette();
         if (_editMode) SetEditMode(false);
-        _gallery ??= new GallerySheet(_host, _board.BoardWidth, widget =>
+        _gallery ??= new GallerySheet(_host, _board.BoardWidth, design =>
         {
-            _celebrate.Add(widget.Id);
-            _host.UpsertWidget(widget);
+            _celebrate.Add(design.Id);
+            _host.Library.Place(design);
+        }, starter =>
+        {
+            HideNow();
+            App.Current.OpenStudio(starter: starter);
         }, () =>
         {
             CloseGallery();

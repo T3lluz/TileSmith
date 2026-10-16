@@ -21,8 +21,8 @@ public static class DeviceContext
             return $"- OS: {product} {display} (build {build}), {RuntimeInformation.OSArchitecture}, user \"{Environment.UserName}\", PC \"{Environment.MachineName}\"";
         });
         Section(sb, () => Elevation.IsElevated
-            ? "- TileSmith runs as administrator: admin=true scripts and actions run without a prompt."
-            : "- TileSmith runs as a normal user: admin=true shows a Windows (UAC) prompt every time it runs — avoid it for anything that runs often, like state queries.");
+            ? "- TileSmith runs as administrator: settings that need admin rights change without a prompt."
+            : "- TileSmith runs as a normal user: PowerShell queries must not need administrator rights.");
         Section(sb, () => $"- AppData: {Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)}; user profile: {Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}");
         Section(sb, () =>
         {

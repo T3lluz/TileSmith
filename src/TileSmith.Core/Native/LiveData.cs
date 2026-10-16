@@ -31,7 +31,8 @@ public static class Weather
                   $"latitude={lat.ToString(CultureInfo.InvariantCulture)}&longitude={lon.ToString(CultureInfo.InvariantCulture)}" +
                   "&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day,precipitation" +
                   "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset" +
-                  "&timezone=auto&forecast_days=5" + (imperial ? "&temperature_unit=fahrenheit&wind_speed_unit=mph" : "");
+                  "&hourly=temperature_2m,precipitation_probability&forecast_hours=13" +
+                  "&timezone=auto&forecast_days=5" + (imperial ? "&temperature_unit=fahrenheit&wind_speed_unit=mph" : "&wind_speed_unit=ms");
         var root = JsonNode.Parse(await Http.GetStringAsync(url, ct)) ?? throw new ActionException("The weather service sent nothing.");
         var current = root["current"]!;
         var code = (int)Num(current["weather_code"]);
@@ -53,6 +54,21 @@ public static class Weather
                 ["icon"] = Icon(dayCode, true),
             });
         }
+        // the next hours: temperature and the chance of rain, for charts and "rain at 15:00"
+        var hours = new JsonArray();
+        if (root["hourly"] is { } hourly && hourly["time"] is JsonArray times)
+        {
+            for (var i = 0; i < times.Count; i++)
+            {
+                hours.Add(new JsonObject
+                {
+                    ["time"] = Time(times[i]),
+                    ["iso"] = times[i]?.GetValue<string>(),
+                    ["temp"] = Math.Round(Num(hourly["temperature_2m"]?[i])),
+                    ["rain"] = Math.Round(Num(hourly["precipitation_probability"]?[i])),
+                });
+            }
+        }
         var json = new JsonObject
         {
             ["place"] = name,
@@ -62,7 +78,7 @@ public static class Weather
             ["wind"] = Math.Round(Num(current["wind_speed_10m"])),
             ["precipitation"] = Num(current["precipitation"]),
             ["unit"] = imperial ? "°F" : "°C",
-            ["windUnit"] = imperial ? "mph" : "km/h",
+            ["windUnit"] = imperial ? "mph" : "m/s",
             ["condition"] = Condition(code),
             ["icon"] = Icon(code, day),
             ["isDay"] = day,
@@ -70,7 +86,11 @@ public static class Weather
             ["low"] = days.Count > 0 ? days[0]!["low"]!.DeepClone() : null,
             ["sunrise"] = Time(daily["sunrise"]?[0]),
             ["sunset"] = Time(daily["sunset"]?[0]),
+            ["sunriseIso"] = daily["sunrise"]?[0]?.GetValue<string>(),
+            ["sunsetIso"] = daily["sunset"]?[0]?.GetValue<string>(),
+            ["sunriseNext"] = daily["sunrise"]?[1]?.GetValue<string>(),
             ["days"] = days,
+            ["hours"] = hours,
         }.ToJsonString();
         lock (Recent) Recent[key] = (DateTime.UtcNow, json);
         return json;
@@ -158,7 +178,8 @@ public static class NetworkInfo
     private static readonly object Gate = new();
     private static (long Down, long Up, DateTime At, string Id)? _last;
 
-    public static async Task<string> GetAsync(CancellationToken ct)
+    /// <param name="wifi">Also ask for the Wi-Fi name and signal (starts netsh: skip it for speed-only reads).</param>
+    public static async Task<string> GetAsync(CancellationToken ct, bool wifi = true)
     {
         var nic = NetworkInterface.GetAllNetworkInterfaces()
             .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType is not (NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel))
@@ -167,9 +188,9 @@ public static class NetworkInfo
             .FirstOrDefault();
         var json = new JsonObject { ["online"] = NetworkInterface.GetIsNetworkAvailable(), ["name"] = "", ["type"] = "", ["ip"] = "", ["ssid"] = "", ["signal"] = 0, ["down"] = 0, ["up"] = 0 };
         if (nic is null) return json.ToJsonString();
-        var wifi = nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
+        var wireless = nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211;
         json["name"] = nic.Name;
-        json["type"] = wifi ? "Wi-Fi" : nic.NetworkInterfaceType == NetworkInterfaceType.Ethernet ? "Ethernet" : nic.NetworkInterfaceType.ToString();
+        json["type"] = wireless ? "Wi-Fi" : nic.NetworkInterfaceType == NetworkInterfaceType.Ethernet ? "Ethernet" : nic.NetworkInterfaceType.ToString();
         json["ip"] = nic.GetIPProperties().UnicastAddresses.FirstOrDefault(a => a.Address.AddressFamily == AddressFamily.InterNetwork)?.Address.ToString() ?? "";
 
         var stats = nic.GetIPStatistics();
@@ -185,7 +206,7 @@ public static class NetworkInfo
             _last = (stats.BytesReceived, stats.BytesSent, now, nic.Id);
         }
 
-        if (wifi)
+        if (wireless && wifi)
         {
             var (ssid, signal) = await WlanAsync(ct);
             json["ssid"] = ssid;

@@ -3,8 +3,8 @@
 <h1 align="center">TileSmith</h1>
 
 <p align="center"><b>Quick settings for Windows that your AI builds for you.</b><br>
-A Liquid Glass panel in the taskbar corner — and Widget Studio, where you describe a widget, watch it appear
-with your real data, and keep chatting until it's exactly right.</p>
+A Liquid Glass panel in the taskbar corner, and Widget Studio, where you describe a widget, watch it appear
+with your real data in seconds, and keep chatting (or tweak it yourself) until it's exactly right.</p>
 
 <p align="center"><img src="assets/panel.png" width="560" alt="The TileSmith panel"></p>
 
@@ -20,30 +20,40 @@ dot turns green, and one click installs it.
 
 ## Use it
 
-- **Tap** tiles to toggle, **drag** sliders, pick options in segmented bars.
+- **Click** switches to flip them, **drag** sliders, pick options in segmented bars; buttons do what they say.
 - **Press and hold** a tile to lift it, then drag it where you want it; hold without moving for its menu
-  (size, duplicate, edit JSON, remove). In edit mode (pencil) the **corner handle** resizes and **✦** changes a tile with AI.
-- **+ Add widget** opens a gallery of ready-made tiles; the chip in the header picks the AI and model.
+  (size, duplicate, edit JSON, take off the panel). In edit mode (pencil) the **corner handle** resizes and **✦** opens it in Widget Studio.
+- **+ Add widget** opens the gallery: ready-made widgets drawn as they'll look (Quick Settings, shortcuts, PC
+  dashboards, weather, now playing, headlines, your server). One click adds one; the pencil opens it in the Studio first.
 - Shortcuts: Ctrl+K ask the AI · Ctrl+G gallery · Ctrl+E edit · Ctrl+M model · Ctrl+, settings · ↑ previous prompts.
-- **Ask for anything** in the bar at the bottom — it opens **Widget Studio**. Try:
-  - *“Weather where I live with the next few days”* · *“A dashboard with CPU, memory and disk gauges”*
-  - *“Switch my laptop display between 2560×1440 and 1920×1200”* · *“A toggle for my VPN”*
-  - *“What's playing, with the cover art”* · *“The five apps using the most CPU”*
+- **Ask for anything** in the bar at the bottom: it opens **Widget Studio**. Try:
+  - *“Weather where I live with the next few days”* · *“CPU and memory as rings with a CPU graph”*
+  - *“Switch my laptop display between 2560×1440 and 1920×1200”* · *“A switch for my VPN”*
+  - *“What's playing, with the cover art”* · *“The five apps using the most CPU”* · *“A countdown to my vacation”*
 
 ## Widget Studio
 
-Chat on the left, your widget on the right — live, at its real size, with its real data (taps in the preview
-run for real). The AI looks at your PC, writes and tests whatever it needs, and before every draft TileSmith
-runs the widget's queries and checks that the tile can read them. Then:
+The conversation is on the left; on the right your widget sits on a stage at its real size with its real data (and it
+works: switches switch). One message, one design: the AI answers in seconds with a widget that always draws, a short
+reply and a few one-click suggestions for what to change next.
 
-- **Keep chatting** — “make it more compact”, “add a graph”, “use green when it's online” — the AI changes only what you ask.
-- **Step back** to any earlier version (v1, v2…), pick another size, or edit the JSON.
-- **Add to panel** when you like it. Tiles that fail later offer **Fix with AI**, which hands the error back to the Studio.
+- **Keep chatting**: “make it more compact”, “add a graph”, “use the ocean palette”. The AI changes only what you ask.
+- **Blocks**: click a block (in the list or on the stage) to change what it shows, how it shows it, its label, colour,
+  container and width, or move and remove it. **Look**: size, palette, background, shapes and refresh, no AI needed.
+  **JSON**: the design itself.
+- **Undo** steps back through the last twenty changes. Every change saves as you go; **Add to panel** puts it on the
+  panel, and from then on the panel follows your changes live.
+- What a widget still needs (your town for the weather, your OK for a script or a site, a server) shows as chips under
+  the stage. Tiles that fail later offer **Fix with AI**, which hands the error back to the Studio.
 
-The AI designs each tile freely from rows, columns, text, icons, images, gauges, progress bars, history lines,
-lists and buttons — within styling rules (colour tokens, a type scale, spacing) that keep everything native in
-light and dark mode. Live data comes from built-ins (CPU, memory, disk, network speed, busiest apps, weather,
-what's playing, battery, countdowns, ping, values a widget remembers) or any script that prints JSON.
+Widgets are designs in the same language as DailyDash's Tilesmith: one of seven sizes (icon 1×1, mini 2×1, small 2×2,
+tall 2×3, bar 4×1, wide 4×2, large 4×3), a Material 3 palette (your accent colour, or ocean, berry, forest, sunset,
+lemon, lavender, mint, racing, sand, mono), a surface, and up to four rows of blocks: numbers, rings, wavy bars, charts,
+lists, text, badges on the 35 M3 Expressive shapes, clocks, countdowns, buttons, AI lines, pictures, carousels, a media
+player, and Quick Settings switches, sliders and choices. Each block shows one source: CPU, memory, disk, battery,
+the busiest apps, Wi-Fi, Bluetooth, dark mode, volume, brightness, the power mode, resolution and refresh rate, a VPN,
+an app, the network, ping, what's playing, the weather, your server, any RSS feed, JSON API or picture, kept counters,
+lines and rows your AI writes, and short PowerShell queries for anything else (you approve each one once).
 
 ## Connect your AI
 
@@ -75,18 +85,20 @@ server host keys are pinned on first connect.
 
 ## How it works
 
-Widgets are small JSON documents (stored in `%AppData%\TileSmith\widgets.json`): a **layout** of elements fed by
-live **data**, or for simple switches a single control (`toggle`, `slider`, `choice`, `button`, `status`), all bound
-to **actions**. Built-in actions cover display resolution and refresh rate, brightness, volume and microphone, dark
-mode, power mode, Wi-Fi and Bluetooth, media keys and now playing, system stats, network, weather, shortcuts, apps,
-URLs, commands on your server and HTTP webhooks; anything else runs as a PowerShell script (queries on two warm
-PowerShell hosts, so tiles that refresh every few seconds stay fast). The model never touches your PC directly:
-TileSmith runs the agent's tools locally and sends the results back.
+Every widget is a small JSON design (kept in `%AppData%\TileSmith\designs.json`, with the panel's order): a size,
+palette and surface, and rows of blocks bound to sources by name. The AI is handed the whole design language and every
+source, answers with one JSON object, and TileSmith reads it leniently, clamps it to its size and sends it back once
+with what was wrong if it used a source that doesn't exist, so a widget always draws. Sources are read at their own
+pace (CPU every two seconds, the weather every ten minutes, AI lines every hour), shared between widgets and kept on
+disk, so the panel opens on the last values. Switches, sliders, choices and buttons go through TileSmith's built-in
+actions (display modes, brightness, volume and microphone, dark mode, power mode, Wi-Fi and Bluetooth, media keys,
+apps, URLs, Windows Settings pages, shortcuts). Widgets from 0.4 are converted on first start; free-form layouts get a
+one-click "Rebuild" that hands their request to the Studio.
 
 ```
-src/TileSmith.Core   widget model & validator, actions (Win32 display/audio/power…), agent loop, AI backends, SSH
-src/TileSmith        WinUI 3 app: tray icon, Liquid Glass panel, tiles, Widget Studio, settings, Velopack updates
-tests/               unit tests incl. an end-to-end agent run against a scripted model
+src/TileSmith.Core   designs, sources, the resolver and controls, the AI designer, actions (Win32 display/audio/power…), AI backends, SSH
+src/TileSmith        WinUI 3 app: tray icon, glass panel, tile renderer, gallery, Widget Studio, settings, Velopack updates
+tests/               unit tests, plus opt-in runs against a real AI (TILESMITH_IT_AI) and server (TILESMITH_IT_SERVER)
 ```
 
 ## Build from source

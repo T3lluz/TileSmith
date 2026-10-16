@@ -130,6 +130,30 @@ public partial class App : Application
     private void StartCapture(string folder)
     {
         var shots = new List<DevCapture.Shot>();
+        // a real conversation in the Studio (TILESMITH_CAPTURE_PROMPT; a second message in TILESMITH_CAPTURE_REVISE)
+        if (System.Environment.GetEnvironmentVariable("TILESMITH_CAPTURE_PROMPT") is { Length: > 0 } prompt)
+        {
+            async Task<UIElement?> AfterAi(Func<Task> start)
+            {
+                await start();
+                var until = DateTime.UtcNow.AddMinutes(5);
+                await Task.Delay(800);
+                while (_studio!.IsRunning && DateTime.UtcNow < until) await Task.Delay(500);
+                await Task.Delay(2500);
+                return _studio.CaptureRoot;
+            }
+            shots.Add(new("studio-ai-1", () => AfterAi(() => { OpenStudio(prompt); return Task.CompletedTask; })));
+            if (System.Environment.GetEnvironmentVariable("TILESMITH_CAPTURE_REVISE") is { Length: > 0 } revise)
+                shots.Add(new("studio-ai-2", () => AfterAi(() => { _ = _studio!.AskForCaptureAsync(revise); return Task.CompletedTask; })));
+            shots.Add(new("studio-ai-3-panel", async () =>
+            {
+                _studio!.PlaceForCapture();
+                _panel!.Show();
+                _panel.Pin();
+                await Task.Delay(2500);
+                return _panel.CaptureRoot;
+            }));
+        }
         foreach (var state in PanelWindow.CaptureStates)
         {
             shots.Add(new($"panel-{state}", async () =>
@@ -137,6 +161,16 @@ public partial class App : Application
                 _panel!.PrepareCapture(state);
                 await Task.Delay(150);
                 return _panel.CaptureRoot;
+            }));
+        }
+        foreach (var state in StudioWindow.CaptureStates)
+        {
+            shots.Add(new($"studio-{state}", async () =>
+            {
+                OpenStudio();
+                _studio!.PrepareCapture(state);
+                await Task.Delay(1200);
+                return _studio.CaptureRoot;
             }));
         }
         foreach (var page in SettingsWindow.PageTags)
@@ -147,6 +181,8 @@ public partial class App : Application
                 return Task.FromResult<UIElement?>(_settings?.CaptureRoot);
             }));
         }
+        if (System.Environment.GetEnvironmentVariable("TILESMITH_CAPTURE_ONLY") is { Length: > 0 } only)
+            shots = shots.Where(s => s.Name.StartsWith(only, StringComparison.Ordinal)).ToList();
         _ = DevCapture.RunAsync(folder, shots, Quit);
     }
 
@@ -247,15 +283,15 @@ public partial class App : Application
 
     public void ShowPanel() => _panel?.Show();
 
-    /// <summary>Opens Widget Studio, optionally starting with a request and/or a panel widget to change.</summary>
-    public void OpenStudio(string? request = null, Core.Widgets.WidgetDefinition? widget = null)
+    /// <summary>Opens Widget Studio, optionally on a design or a starter, and/or with a request for the AI.</summary>
+    public void OpenStudio(string? request = null, Core.Tiles.TileDesign? design = null, Core.Tiles.TileStarters.Starter? starter = null)
     {
         if (_studio is null)
         {
             _studio = new StudioWindow(Host);
             _studio.Closed += (_, _) => _studio = null;
         }
-        _studio.Open(request, widget);
+        _studio.Open(request, design, starter);
     }
 
     public bool IsStudioBusy => _studio?.IsRunning == true;
@@ -270,6 +306,7 @@ public partial class App : Application
         {
             _tray?.Dispose();
             _tray = null;
+            Host?.Values.Save(always: true);
             Core.Actions.PowerShellHost.ShutdownAll();
             Notifications.Shutdown();
         }

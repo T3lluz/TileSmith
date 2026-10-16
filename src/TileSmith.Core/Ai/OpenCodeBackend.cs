@@ -24,7 +24,7 @@ public sealed class OpenCodeBackend(string? model, TimeSpan timeout, ServerConne
 
     public async Task<string> CompleteAsync(IReadOnlyList<AiMessage> messages, CancellationToken ct)
     {
-        var prompt = Transcript.Render(messages) + "\n(OpenCode's own tools are switched off here: answer only with the ```json block.)\n";
+        var prompt = Transcript.Render(messages) + "\n(OpenCode's own tools are switched off here: answer only with the JSON.)\n";
         var output = server is null ? await RunLocalAsync(prompt, ct) : await RunOnServerAsync(prompt, ct);
         return ParseEvents(output);
     }

@@ -66,11 +66,11 @@ public static class Transcript
         foreach (var m in rest)
         {
             sb.AppendLine();
-            sb.AppendLine(m.Role == "assistant" ? "[YOU]" : "[USER / TOOL RESULTS]");
+            sb.AppendLine(m.Role == "assistant" ? "[YOU]" : "[USER]");
             sb.AppendLine(m.Content);
         }
         sb.AppendLine();
-        sb.AppendLine("=== Your turn: reply with one ```json tool call block only ===");
+        sb.AppendLine("=== Your turn: reply with the JSON only ===");
         return sb.ToString();
     }
 }

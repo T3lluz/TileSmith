@@ -174,6 +174,16 @@ public sealed class Palette
         ("violet", "Violet", "#B39DDB"),
     ];
 
+    /// <summary>The accent as chosen (not darkened for light mode): the seed widgets' accent palette grows from, as 0xRRGGBB.</summary>
+    public static uint SeedFor(string accentSetting)
+    {
+        var c = ResolveAccent(accentSetting, dark: true);
+        return ((uint)c.R << 16) | ((uint)c.G << 8) | c.B;
+    }
+
+    public static Color FromRgb(uint rgb, double alpha = 1) =>
+        Color.FromArgb((byte)Math.Round(Math.Clamp(alpha, 0, 1) * 255), (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb);
+
     private static Color ResolveAccent(string setting, bool dark)
     {
         if (setting == "windows")

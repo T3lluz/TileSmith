@@ -4,8 +4,9 @@ using TileSmith.Core;
 using TileSmith.Core.Actions;
 using TileSmith.Core.Ai;
 using TileSmith.Core.Remote;
+using TileSmith.Core.Native;
 using TileSmith.Core.Settings;
-using TileSmith.Core.Widgets;
+using TileSmith.Core.Tiles;
 using Windows.ApplicationModel.DataTransfer;
 
 namespace TileSmith.Services;
@@ -117,27 +118,58 @@ public sealed class ServerManager(AppHost host)
 }
 
 /// <summary>App-wide state and services. Lives for the whole process.</summary>
-public sealed class AppHost : IActionHost
+public sealed class AppHost : IActionHost, ITileHost
 {
     public AppHost(DispatcherQueue dispatcher)
     {
         Dispatcher = dispatcher;
         Settings = SettingsStore.Load();
         KnownHosts = new KnownHostsStore(AppPaths.KnownHostsFile);
-        Widgets = new ObservableCollection<WidgetDefinition>(WidgetStore.Load());
         Server = new ServerManager(this);
         Actions = new ActionEngine(this);
         Updates = new UpdateService(dispatcher, Settings, SaveSettings);
-        Directory.CreateDirectory(AgentPrompt.ToolsDir);
+        Environment = DetectEnvironment();
+        Library = new TileLibrary();
+        Library.Load(Environment);
+        Values = new TileResolver(this);
+        Controls = new TileControls(this, Values);
+        // slow values (weather, the web, AI lines) are kept on disk so the panel opens on them
+        _saveValues = dispatcher.CreateTimer();
+        _saveValues.Interval = TimeSpan.FromSeconds(30);
+        _saveValues.Tick += (_, _) => Values.Save();
+        _saveValues.Start();
+        // charts of the last two minutes (CPU, memory, network) are ready when the panel opens
+        _history = dispatcher.CreateTimer();
+        _history.Interval = TimeSpan.FromSeconds(PcHistory.IntervalSeconds * 2);
+        _history.Tick += (_, _) =>
+        {
+            if (Library.Panel.Any(d => d.Blocks.Any(b => TileSources.Canonical(b.Bind) is "pc.cpu_history" or "pc.memory_history" or "net.speed_history")))
+                _ = Task.Run(PcHistory.Sample);
+        };
+        _history.Start();
     }
+
+    private readonly DispatcherQueueTimer _saveValues;
+    private readonly DispatcherQueueTimer _history;
 
     public DispatcherQueue Dispatcher { get; }
     public AppSettings Settings { get; }
     public KnownHostsStore KnownHosts { get; }
-    public ObservableCollection<WidgetDefinition> Widgets { get; }
     public ServerManager Server { get; }
     public ActionEngine Actions { get; }
     public UpdateService Updates { get; }
+
+    /// <summary>Every design and which are on the panel.</summary>
+    public TileLibrary Library { get; }
+
+    /// <summary>What widgets' sources read, shared by every tile.</summary>
+    public TileResolver Values { get; }
+
+    /// <summary>Switches, sliders, choices and taps.</summary>
+    public TileControls Controls { get; }
+
+    /// <summary>What this PC has (battery, brightness, Wi-Fi, displays), for the gallery and the first panel.</summary>
+    public TileEnvironment Environment { get; private set; }
 
     /// <summary>Raised (on the UI thread) after settings were saved.</summary>
     public event Action? SettingsChanged;
@@ -151,8 +183,6 @@ public sealed class AppHost : IActionHost
         SettingsChanged?.Invoke();
     }
 
-    public void SaveWidgets() => WidgetStore.Save(Widgets);
-
     public IAiBackend CreateBackend() => AiEngineFactory.Create(Settings, Server.GetConnection);
 
     /// <summary>"Claude Opus", "Hermes", "gpt-5.2"… — the AI in use, for messages.</summary>
@@ -162,64 +192,46 @@ public sealed class AppHost : IActionHost
         return ProviderCatalog.ModelLabel(provider, Settings.Ai.ModelFor(provider.Id));
     }
 
-    // ── Widget operations (used by the panel and by the agent) ─────────────────────────
-
-    /// <summary>Adds the widget, or replaces the one with the same id. Returns true if it replaced.</summary>
-    public bool UpsertWidget(WidgetDefinition widget)
+    public TileEnvironment DetectEnvironment()
     {
-        var index = IndexOf(widget.Id);
-        if (index >= 0) Widgets[index] = widget;
-        else Widgets.Add(widget);
-        SaveWidgets();
-        return index >= 0;
-    }
-
-    public WidgetDefinition? RemoveWidget(string id)
-    {
-        var index = IndexOf(id);
-        if (index < 0) return null;
-        var removed = Widgets[index];
-        Widgets.RemoveAt(index);
-        SaveWidgets();
-        return removed;
-    }
-
-    public void InsertWidget(int index, WidgetDefinition widget)
-    {
-        Widgets.Insert(Math.Clamp(index, 0, Widgets.Count), widget);
-        SaveWidgets();
-    }
-
-    public bool MoveWidget(string id, int position)
-    {
-        var index = IndexOf(id);
-        if (index < 0) return false;
-        position = Math.Clamp(position, 0, Widgets.Count - 1);
-        if (index != position) Widgets.Move(index, position);
-        SaveWidgets();
-        return true;
-    }
-
-    public bool ResizeWidget(string id, string size)
-    {
-        var index = IndexOf(id);
-        if (index < 0) return false;
-        var copy = Widgets[index].Clone();
-        copy.Size = size;
-        WidgetValidator.Validate(copy);
-        Widgets[index] = copy;
-        SaveWidgets();
-        return true;
-    }
-
-    public int IndexOf(string id)
-    {
-        for (var i = 0; i < Widgets.Count; i++)
+        static bool Safe(Func<bool> check)
         {
-            if (Widgets[i].Id == id) return i;
+            try { return check(); }
+            catch { return false; }
         }
-        return -1;
+        var displays = 1;
+        try { displays = DisplayManager.GetDisplays().Count; }
+        catch (Exception ex) { Log.Warn($"Couldn't count displays: {ex.Message}"); }
+        var wifi = Safe(() => System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+            .Any(n => n.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211));
+        return Environment = new TileEnvironment(
+            HasBattery: Safe(() => PowerControl.GetBattery().HasBattery),
+            HasBrightness: Safe(BrightnessControl.IsSupported),
+            HasWifi: wifi,
+            Displays: displays,
+            ServerConfigured: Settings.Server.IsConfigured);
     }
+
+    // ── ITileHost ───────────────────────────────────────────────────────────────────
+
+    public TileSettings Tiles => Settings.Tiles;
+
+    public bool ServerConfigured => Settings.Server.IsConfigured;
+
+    public string ServerName => Server.DisplayName;
+
+    async Task<string> ITileHost.RunOnServerAsync(string script, TimeSpan timeout, CancellationToken ct)
+    {
+        var result = await Server.GetConnection().RunScriptAsync(script, timeout, ct);
+        Server.MarkConnected();
+        if (!result.Success && string.IsNullOrWhiteSpace(result.Stdout))
+            throw new ActionException($"The server said: {result.Stderr.Trim()}");
+        return result.Stdout;
+    }
+
+    public bool AiReady => AiEngineFactory.Chain(Settings).Any(id => ProviderCatalog.Status(ProviderCatalog.Get(id), Settings).IsReady);
+
+    public IAiBackend CreateAi() => CreateBackend();
 
     // ── IActionHost ─────────────────────────────────────────────────────────────────
 

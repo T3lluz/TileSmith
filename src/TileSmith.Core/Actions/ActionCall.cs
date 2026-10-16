@@ -35,7 +35,7 @@ public sealed class ActionCall
         string? text = node.GetValueKind() switch
         {
             JsonValueKind.String => node.GetValue<string>(),
-            JsonValueKind.Number => node.GetValue<JsonElement>().GetRawText(),
+            JsonValueKind.Number => node.ToJsonString(),
             JsonValueKind.True => "true",
             JsonValueKind.False => "false",
             JsonValueKind.Null => null,

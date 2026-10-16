@@ -84,7 +84,7 @@ public sealed class UpdatesPage : SettingsPage
             UpdateStage.NotInstalled => ("construction", "Development build", $"Version {u.CurrentVersion}. Install TileSmith from GitHub Releases to get automatic updates.", "Not available"),
             _ => ("verified", "You're up to date", $"Version {u.CurrentVersion}. {lastChecked}".Trim(), "Check for updates"),
         };
-        _heroIcon.Text = Core.Widgets.Icons.Glyph(icon);
+        _heroIcon.Text = Core.Tiles.Icons.Glyph(icon);
         _heroIcon.Foreground = p.Brush(u.Stage == UpdateStage.Error ? p.Warning : p.Accent);
         _heroTitle.Text = title;
         _heroSubtitle.Text = subtitle;

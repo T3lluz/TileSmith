@@ -1,7 +1,6 @@
 using TileSmith.Core.Ai;
 using TileSmith.Core.Remote;
 using TileSmith.Core.Settings;
-using TileSmith.Core.Widgets;
 using Xunit;
 
 namespace TileSmith.Core.Tests;
@@ -224,96 +223,5 @@ public class ProviderTests
         var account = LocalCliBackend.ParseAccount(LocalCli.Cursor, "✓ Logged in as me@x.com\n");
         Assert.True(account.SignedIn);
         Assert.Equal("Signed in as me@x.com", account.Summary);
-    }
-}
-
-public class TileFitTests
-{
-    private static WidgetDefinition Parse(string json) => WidgetDefinition.FromJson(json);
-
-    private const string Toggle = """{"type":"toggle","label":"Thing","state":{"type":"theme.get"},"on":{"type":"theme.set","mode":"dark"},"off":{"type":"theme.set","mode":"light"}}""";
-    private const string Status = """{"type":"status","label":"Value","state":{"type":"theme.get"}}""";
-
-    [Fact]
-    public void A_card_that_needs_more_rows_grows_and_says_so()
-    {
-        var w = Parse($$"""{"title":"Lots","size":"4x2","controls":[{{Toggle}},{{Toggle}},{{Toggle}},{{Toggle}}]}""");
-        var result = WidgetValidator.Validate(w);
-        Assert.True(result.IsValid, string.Join("; ", result.Errors));
-        Assert.Equal("4x3", w.Size);
-        Assert.Contains(result.Warnings, x => x.Contains("too small"));
-        Assert.True(TileLayout.CardHeight(w) <= TileLayout.Height(3));
-    }
-
-    [Fact]
-    public void Content_taller_than_three_rows_is_rejected()
-    {
-        var w = Parse($$"""{"title":"Too much","controls":[{{Toggle}},{{Toggle}},{{Toggle}},{{Toggle}},{{Toggle}},{{Toggle}}]}""");
-        var result = WidgetValidator.Validate(w);
-        Assert.Contains(result.Errors, e => e.Contains("Split it"));
-    }
-
-    [Fact]
-    public void Every_card_size_fits_what_the_validator_allows()
-    {
-        foreach (var count in new[] { 1, 2, 3, 4, 5 })
-        {
-            var controls = string.Join(",", Enumerable.Repeat(Status, count));
-            var w = Parse($$"""{"title":"S","subtitle":"sub","size":"2x2","controls":[{{controls}}]}""");
-            if (!WidgetValidator.Validate(w).IsValid) continue;
-            Assert.True(TileLayout.CardHeight(w) <= TileLayout.Height(w.Cells.H) || TileLayout.IsSingle(w, w.Cells), $"{count} rows in {w.Size}");
-        }
-    }
-
-    [Fact]
-    public void Long_choice_options_need_the_full_width()
-    {
-        var w = Parse("""{"title":"Mode","size":"2x1","controls":[{"type":"choice","options":[{"label":"Efficiency","action":{"type":"power.setMode","mode":"efficiency"}},{"label":"Balanced","action":{"type":"power.setMode","mode":"balanced"}},{"label":"Performance","action":{"type":"power.setMode","mode":"performance"}}]}]}""");
-        var result = WidgetValidator.Validate(w);
-        Assert.True(result.IsValid, string.Join("; ", result.Errors));
-        Assert.Equal(4, w.Cells.W);
-    }
-
-    [Fact]
-    public void Long_labels_are_pointed_out()
-    {
-        var w = Parse("""{"title":"X","size":"1x1","controls":[{"type":"button","label":"Open the downloads folder now","action":{"type":"power.action","action":"lock"}}]}""");
-        var result = WidgetValidator.Validate(w);
-        Assert.Contains(result.Warnings, x => x.Contains("cut off"));
-    }
-
-    [Fact]
-    public void Prompt_tells_the_ai_the_tile_sizes()
-    {
-        var prompt = AgentPrompt.System("- OS: test", []);
-        Assert.Contains("118", prompt);
-        Assert.Contains("Tile sizes", prompt);
-        Assert.Contains("502", prompt);
-    }
-
-    [Fact]
-    public void Gallery_templates_are_valid_and_fit()
-    {
-        var templates = WidgetTemplates.ForThisPc(serverConfigured: true);
-        Assert.True(templates.Count >= 20);
-        foreach (var t in templates)
-        {
-            var w = t.Create();
-            var result = WidgetValidator.Validate(w);
-            Assert.True(result.IsValid, t.Name + ": " + string.Join("; ", result.Errors));
-            Assert.DoesNotContain(result.Warnings, x => x.Contains("cut off") || x.Contains("too small") || x.Contains("Unknown icon") || x.Contains("don't fit"));
-        }
-    }
-
-    [Fact]
-    public void Projection_bar_fits_on_one_row()
-    {
-        // An icon on one segment made this wider than a 4x1 bar, so the gallery grew it on
-        // external-display PCs (including the release runner) and the fit test failed.
-        var w = Parse("""{"title":"Projection","icon":"cast","size":"4x1","controls":[{"type":"choice","options":[{"label":"PC only","action":{"type":"display.project","mode":"pcScreenOnly"}},{"label":"Mirror","action":{"type":"display.project","mode":"duplicate"}},{"label":"Extend","action":{"type":"display.project","mode":"extend"}},{"label":"Second","action":{"type":"display.project","mode":"secondScreenOnly"}}]}]}""");
-        var result = WidgetValidator.Validate(w);
-        Assert.True(result.IsValid, string.Join("; ", result.Errors));
-        Assert.Empty(result.Warnings);
-        Assert.Equal("4x1", result.Widget.Size);
     }
 }

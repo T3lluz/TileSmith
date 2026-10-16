@@ -48,8 +48,26 @@ public sealed class AppSettings
     /// <summary>Prompts sent from the panel, newest first (Up arrow in the composer recalls them).</summary>
     public List<string> PromptHistory { get; set; } = [];
 
+    public TileSettings Tiles { get; set; } = new();
+
     /// <summary>3 = Liquid Glass became the panel's default look (0.4.0).</summary>
     public const int CurrentVersion = 3;
+}
+
+/// <summary>What widgets read: your town for the weather, units, and the scripts and sites you allowed.</summary>
+public sealed class TileSettings
+{
+    /// <summary>The town weather widgets use when they don't name one ("Oslo", "Bergen, Norway", "59.9,10.7").</summary>
+    public string? HomeTown { get; set; }
+
+    /// <summary>°F and mph instead of °C and m/s.</summary>
+    public bool Imperial { get; set; }
+
+    /// <summary>Scripts and server commands you allowed, by a hash of the command (and server).</summary>
+    public List<string> ApprovedCommands { get; set; } = [];
+
+    /// <summary>Sites widgets may read, by host name.</summary>
+    public List<string> ApprovedSites { get; set; } = [];
 }
 
 public sealed class ServerProfile

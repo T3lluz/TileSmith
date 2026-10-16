@@ -9,7 +9,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
-using TileSmith.Core.Widgets;
+using TileSmith.Core.Tiles;
 using TileSmith.Theme;
 using Windows.System;
 using Windows.UI;
@@ -440,6 +440,23 @@ public sealed class PillSlider : Grid
     public bool IsDragging => _dragging;
     public double Value => _current;
 
+    /// <summary>Colours other than the panel's (a widget's own palette).</summary>
+    public sealed record SliderColors(Color Track, Color Fill, Color OnFill, Color Text, Color TextVariant);
+
+    private SliderColors? _colors;
+
+    public void SetColors(SliderColors colors)
+    {
+        _colors = colors;
+        var p = Palette.Current;
+        Background = p.Brush(colors.Track);
+        _fill.Background = p.Brush(colors.Fill);
+        _icon.Foreground = p.Brush(colors.OnFill);
+        Render();
+    }
+
+    public void SetIcon(string? icon) => _icon.Text = TileSmith.Core.Tiles.Icons.Glyph(icon);
+
     public void Configure(double min, double max, double step)
     {
         _min = min;
@@ -478,8 +495,9 @@ public sealed class PillSlider : Grid
         // once the fill reaches the label, flip the text to the on-accent colour so it stays readable
         var p = Palette.Current;
         var covered = _fill.Width > ActualWidth - _right.ActualWidth - 18 - 4;
-        _label.Foreground = p.Brush(covered ? Palette.WithAlpha(p.OnAccent, 0.75) : p.Text2);
-        _value.Foreground = p.Brush(covered ? p.OnAccent : p.Text1);
+        var onFill = _colors?.OnFill ?? p.OnAccent;
+        _label.Foreground = p.Brush(covered ? Palette.WithAlpha(onFill, 0.75) : _colors?.TextVariant ?? p.Text2);
+        _value.Foreground = p.Brush(covered ? onFill : _colors?.Text ?? p.Text1);
     }
 
     private static string ActionFormat(string format, string value) =>
@@ -557,6 +575,17 @@ public sealed class SegmentedPill : Grid
 
     public int SelectedIndex => _selected;
 
+    private (Color Indicator, Color OnIndicator, Color Text)? _colors;
+
+    /// <summary>Colours other than the panel's (a widget's own palette).</summary>
+    public void SetColors(Color well, Color indicator, Color onIndicator, Color text)
+    {
+        _colors = (indicator, onIndicator, text);
+        Background = Palette.Current.Brush(well);
+        _indicator.Background = Palette.Current.Brush(indicator);
+        Layout(animate: false);
+    }
+
     private void Choose(int index)
     {
         if (!IsEnabledForInput) return;
@@ -586,7 +615,7 @@ public sealed class SegmentedPill : Grid
         _indicator.Opacity = _selected >= 0 ? 1 : 0;
         for (var i = 0; i < _items.Count; i++)
         {
-            var color = i == _selected ? p.OnAccent : p.Text2;
+            var color = i == _selected ? _colors?.OnIndicator ?? p.OnAccent : _colors?.Text ?? p.Text2;
             _items[i].Label.Foreground = p.Brush(color);
             if (_items[i].Icon is { } icon) icon.Foreground = p.Brush(color);
         }

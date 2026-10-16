@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.5.0] - 2026-10-16
+
+- **Widgets are designs now, like DailyDash's Tilesmith**: seven sizes, Material 3 palettes (your accent or ten others),
+  surfaces, and rows of blocks: numbers, rings, wavy bars, charts, lists, badges on the 35 M3 Expressive shapes, clocks,
+  countdowns, buttons, AI lines, pictures, carousels, a media player, and Quick Settings switches, sliders and choices.
+  Every widget draws at its exact size with text fitted to its room, in light and dark, solid or Liquid Glass.
+- **The AI designs a widget in one go**: no more multi-step agent writing scripts. It gets the design language and
+  every source (CPU, memory, disk, battery, busiest apps, Wi-Fi, Bluetooth, dark mode, volume, brightness, power mode,
+  resolution, refresh rate, VPN, apps, network, ping, now playing, weather, your server, feeds, JSON APIs, pictures,
+  counters, AI lines, and PowerShell for anything else) and answers in seconds with a widget that always works. A
+  source it made up goes back to it once with what was wrong.
+- **New Widget Studio**: the widget on a stage at its real size with your data (and it works), chips for what it still
+  needs, one-click suggestions after every answer, Undo, and Blocks / Look / JSON panes to change anything without the
+  AI. Every change saves; widgets on the panel follow your changes live. A front door with ideas, starters and your widgets.
+- **A new gallery**: ready-made widgets drawn as they'll look, from Quick Settings and shortcuts to PC dashboards,
+  weather, now playing, headlines and your server.
+- **Faster, steadier tiles**: sources are read at their own pace and shared between widgets, the last values are kept
+  on disk so the panel opens on them, and a failed read keeps the last good value.
+- Widgets from 0.4 are converted on first start (switches, sliders, choices and buttons map to the new sources);
+  free-form layouts get a "Rebuild" button that hands their request to the Studio. widgets.json is left as it was.
+- Settings › Widgets lists every widget (on the panel or not), your town and units for the weather, and the scripts and
+  sites you allowed.
+
 ## [0.4.0] - 2026-10-14
 
 - **Widget Studio**: describe a widget and chat with the AI while it appears next to the conversation — live, at its real size, with your real data. Ask for changes until it's right, step back to earlier versions, pick a size or edit the JSON, then add it to the panel. Every draft's data is checked and problems come with a "fix this" button.

@@ -1,13 +1,9 @@
-using System.Collections.Specialized;
-using System.Diagnostics;
-using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using TileSmith.Controls;
 using TileSmith.Core;
-using TileSmith.Core.Actions;
-using TileSmith.Core.Ai;
-using TileSmith.Core.Widgets;
+using TileSmith.Core.Tiles;
 using TileSmith.Services;
 using TileSmith.Theme;
 using Windows.Storage.Pickers;
@@ -21,55 +17,94 @@ public sealed class WidgetsPage : SettingsPage
     private readonly StackPanel _messages = new() { Spacing = 8 };
 
     public WidgetsPage(AppHost host, SettingsWindow window)
-        : base(host, window, "Widgets", "Everything on your panel. Arrange and resize tiles right in the panel: hold a tile to move it.")
+        : base(host, window, "Widgets", "Every widget you made or added. Arrange and resize them right in the panel: hold a tile to move it.")
     {
         Children.Add(_messages);
         Children.Add(Kit.Section("Your widgets", null));
         Children.Add(Kit.Card(_list));
+        var town = Kit.TextField("Oslo, or Bergen, Norway", Host.Settings.Tiles.HomeTown ?? "", v =>
+        {
+            Host.Settings.Tiles.HomeTown = v.Length == 0 ? null : v;
+            Host.SaveSettings();
+            Show(Kit.Tone.Success, v.Length == 0 ? "Weather widgets will ask for a town." : $"Weather widgets now use {v}.");
+        }, 220);
+        Section("Data", null,
+            Kit.Row("location_on", "Your town", "What weather widgets use when they don't name a place.", town),
+            Kit.Row("thermostat", "Units", "Temperatures and wind speed.",
+                Kit.Segmented([("metric", "°C, m/s"), ("imperial", "°F, mph")], Host.Settings.Tiles.Imperial ? "imperial" : "metric", id =>
+                {
+                    Host.Settings.Tiles.Imperial = id == "imperial";
+                    Host.SaveSettings();
+                }, 200)),
+            Kit.Row("verified_user", "Allowed scripts and sites", $"{Host.Settings.Tiles.ApprovedCommands.Count} script{(Host.Settings.Tiles.ApprovedCommands.Count == 1 ? "" : "s")} and {Host.Settings.Tiles.ApprovedSites.Count} site{(Host.Settings.Tiles.ApprovedSites.Count == 1 ? "" : "s")} widgets may use. Forgetting them makes every widget ask again.",
+                Kit.Button("Forget all", null, ChipStyle.Outline, () =>
+                {
+                    Host.Settings.Tiles.ApprovedCommands.Clear();
+                    Host.Settings.Tiles.ApprovedSites.Clear();
+                    Host.SaveSettings();
+                    Show(Kit.Tone.Success, "Widgets will ask again before running scripts or reading sites.");
+                })));
         Section("Backup and sharing", null,
             Kit.Row("upload", "Export", "Save all widgets to a .json file to back them up or share them.", Kit.Button("Export…", null, ChipStyle.Outline, () => _ = ExportAsync())),
-            Kit.Row("download", "Import", "Add widgets from a .json file. Check what they run before importing files from others.", Kit.Button("Import…", null, ChipStyle.Outline, () => _ = ImportAsync())),
-            Kit.Row("folder_code", "Helper scripts", "Scripts the AI writes for your widgets live here.", Kit.Button("Open folder", "open_in_new", ChipStyle.Outline, OpenTools)),
-            Kit.Row("restart_alt", "Start over", "Replace all widgets with the starter set.", Kit.Button("Reset widgets", null, ChipStyle.Outline, () => _ = ResetAsync()), Palette.Current.Warning));
-        Host.Widgets.CollectionChanged += OnChanged;
+            Kit.Row("download", "Import", "Add widgets from a .json file. Scripts and sites in them still ask before they run.", Kit.Button("Import…", null, ChipStyle.Outline, () => _ = ImportAsync())),
+            Kit.Row("restart_alt", "Start over", "Put the starter Quick Settings back on the panel. Your widgets stay in Widget Studio.", Kit.Button("Reset panel", null, ChipStyle.Outline, () => _ = ResetAsync()), Palette.Current.Warning));
+        Host.Library.Changed += OnChanged;
         BuildList();
     }
 
-    public override void OnHidden() => Host.Widgets.CollectionChanged -= OnChanged;
+    public override void OnHidden() => Host.Library.Changed -= OnChanged;
 
-    private void OnChanged(object? sender, NotifyCollectionChangedEventArgs e) => BuildList();
+    private void OnChanged(string? id) => BuildList();
 
     private void BuildList()
     {
         var p = Palette.Current;
         _list.Children.Clear();
-        if (Host.Widgets.Count == 0)
+        var designs = Host.Library.Designs.OrderBy(d => Host.Library.IsPlaced(d.Id) ? Host.Library.PanelIndexOf(d.Id) : int.MaxValue).ToList();
+        if (designs.Count == 0)
         {
-            _list.Children.Add(Kit.Empty("widgets", "No widgets yet", "Add ready-made ones from the panel's gallery, or describe one to the AI."));
+            _list.Children.Add(Kit.Empty("widgets", "No widgets yet", "Add ready-made ones from the panel's gallery, or describe one in Widget Studio."));
             return;
         }
         var first = true;
-        foreach (var widget in Host.Widgets)
+        foreach (var design in designs)
         {
             if (!first) _list.Children.Add(new Border { Height = 1, Background = p.Brush(p.Hairline), Margin = new Thickness(16, 0, 16, 0) });
             first = false;
-            var actions = widget.AllActions().Select(a => ActionCatalog.Find(a["type"]?.ToString())).OfType<ActionInfo>().ToList();
+            var placed = Host.Library.IsPlaced(design.Id);
+            var sources = design.Blocks.Select(b => TileSources.ByKey(b.Bind)).OfType<TileSource>().ToList();
             var traits = new List<string>();
-            if (actions.Any(a => a.Traits.HasFlag(ActionTraits.Script))) traits.Add("runs scripts");
-            if (actions.Any(a => a.Traits.HasFlag(ActionTraits.Server))) traits.Add("uses your server");
-            if (actions.Any(a => a.Traits.HasFlag(ActionTraits.Network))) traits.Add("uses the internet");
-            var size = widget.Cells;
-            var description = $"{size.W} × {size.H} {WidgetTile.SizeName(size).ToLowerInvariant()} · {(widget.HasLayout ? "custom layout" : $"{widget.Controls.Count} control{(widget.Controls.Count == 1 ? "" : "s")}")}";
+            if (sources.Any(s => s.Key is "ps.value")) traits.Add("runs a script");
+            if (sources.Any(s => s.Group == SourceGroup.Server)) traits.Add("uses your server");
+            if (sources.Any(s => s.Key.StartsWith("web.", StringComparison.Ordinal) || s.Group == SourceGroup.Weather)) traits.Add("uses the internet");
+            if (sources.Any(s => s.Key.StartsWith("ai.", StringComparison.Ordinal))) traits.Add("asks your AI");
+            var description = $"{design.Size.Label} {design.Size.Cells} · {design.Blocks.Count} block{(design.Blocks.Count == 1 ? "" : "s")}" + (placed ? " · on your panel" : "");
             if (traits.Count > 0) description += " · " + string.Join(", ", traits);
-            var id = widget.Id;
-            var remove = new IconButton("delete", "Remove", 34, 18);
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+            var open = new IconButton("auto_awesome", "Open in Widget Studio", 34, 18);
+            open.Click += (_, _) => App.Current.OpenStudio(null, design);
+            actions.Children.Add(open);
+            var place = new IconButton(placed ? "remove_from_queue" : "add_to_queue", placed ? "Take off the panel" : "Put on the panel", 34, 18);
+            place.Click += (_, _) =>
+            {
+                if (placed) Host.Library.Unplace(design.Id);
+                else Host.Library.Place(design);
+            };
+            actions.Children.Add(place);
+            var remove = new IconButton("delete", "Delete", 34, 18);
             remove.Click += (_, _) =>
             {
-                var index = Host.IndexOf(id);
-                var removed = Host.RemoveWidget(id);
-                if (removed is not null) Show(Kit.Tone.Info, $"Removed “{removed.Title}”", Kit.Button("Undo", "undo", ChipStyle.Tonal, () => Host.InsertWidget(index, removed)));
+                var (removed, index) = Host.Library.Delete(design.Id);
+                if (removed is not null)
+                    Show(Kit.Tone.Info, $"Deleted “{removed.Name}”", Kit.Button("Undo", "undo", ChipStyle.Tonal, () =>
+                    {
+                        Host.Library.Upsert(removed, touch: false);
+                        if (index >= 0) Host.Library.Place(removed, index);
+                    }));
             };
-            _list.Children.Add(Kit.Row(widget.Icon ?? "widgets", widget.Title, description, remove));
+            actions.Children.Add(remove);
+            var icon = design.Blocks.Select(b => b.Icon ?? TileSources.ByKey(b.Bind)?.Icon).FirstOrDefault(i => i is not null) ?? "widgets";
+            _list.Children.Add(Kit.Row(icon, design.Name, description, actions));
         }
     }
 
@@ -89,8 +124,10 @@ public sealed class WidgetsPage : SettingsPage
         InitializeWithWindow.Initialize(picker, Window.Handle);
         var file = await picker.PickSaveFileAsync();
         if (file is null) return;
-        await File.WriteAllTextAsync(file.Path, JsonSerializer.Serialize(Host.Widgets.ToList(), JsonDefaults.Options));
-        Show(Kit.Tone.Success, $"Exported {Host.Widgets.Count} widgets.");
+        var designs = Host.Library.Designs;
+        var json = new JsonArray(designs.Select(d => (JsonNode)TileCodec.ToJson(d, withChat: false)).ToArray()).ToJsonString(JsonDefaults.Options);
+        await File.WriteAllTextAsync(file.Path, json);
+        Show(Kit.Tone.Success, $"Exported {designs.Count} widgets.");
     }
 
     private async Task ImportAsync()
@@ -102,9 +139,19 @@ public sealed class WidgetsPage : SettingsPage
         if (file is null) return;
         try
         {
-            var imported = WidgetStore.Import(await File.ReadAllTextAsync(file.Path));
-            foreach (var w in imported) Host.UpsertWidget(w);
-            Show(Kit.Tone.Success, $"Imported {imported.Count} widget{(imported.Count == 1 ? "" : "s")}.");
+            var text = await File.ReadAllTextAsync(file.Path);
+            var node = JsonNode.Parse(text, documentOptions: JsonDefaults.DocumentOptions);
+            var items = node switch { JsonArray a => a.OfType<JsonObject>().ToList(), JsonObject o => [o], _ => [] };
+            var count = 0;
+            foreach (var o in items)
+            {
+                // a widgets.json from TileSmith 0.4 converts; a design comes in as a copy of its own
+                var design = o.ContainsKey("controls") || o.ContainsKey("layout") ? TileMigration.Convert(o) : TileCodec.Parse(o) with { Id = TileDesign.NewId() };
+                if (design is null || design.Blocks.Count == 0) continue;
+                Host.Library.Place(design with { Id = TileDesign.NewId() });
+                count++;
+            }
+            Show(count > 0 ? Kit.Tone.Success : Kit.Tone.Warning, count > 0 ? $"Imported {count} widget{(count == 1 ? "" : "s")} onto your panel." : "There were no widgets in that file.");
         }
         catch (Exception ex)
         {
@@ -112,18 +159,12 @@ public sealed class WidgetsPage : SettingsPage
         }
     }
 
-    private static void OpenTools()
-    {
-        Directory.CreateDirectory(AgentPrompt.ToolsDir);
-        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{AgentPrompt.ToolsDir}\"") { UseShellExecute = true })?.Dispose();
-    }
-
     private async Task ResetAsync()
     {
         var dialog = new ContentDialog
         {
-            Title = "Reset widgets?",
-            Content = "All your widgets will be replaced with the starter set. Export them first if you want to keep them.",
+            Title = "Reset the panel?",
+            Content = "The panel goes back to the starter Quick Settings. Your widgets stay in Widget Studio, so you can put them back.",
             PrimaryButtonText = "Reset",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Close,
@@ -131,9 +172,7 @@ public sealed class WidgetsPage : SettingsPage
             RequestedTheme = ActualTheme,
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        Host.Widgets.Clear();
-        foreach (var w in WidgetStore.Defaults()) Host.Widgets.Add(w);
-        Host.SaveWidgets();
-        Show(Kit.Tone.Success, "Widgets reset.");
+        Host.Library.ResetPanel(Host.DetectEnvironment());
+        Show(Kit.Tone.Success, "Panel reset.");
     }
 }

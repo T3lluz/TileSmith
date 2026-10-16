@@ -46,8 +46,6 @@ public sealed class AiPage : SettingsPage
         Section("Behaviour", null,
             Kit.Row("alt_route", "Fall back automatically", "If the chosen AI can't be reached (offline, signed out, rate limited), TileSmith tries the next ready one and tells you.",
                 Kit.Toggle(S.Ai.AutoFallback, on => { S.Ai.AutoFallback = on; Save(); })),
-            Kit.Row("shield", "What the agent may do", "It runs PowerShell, edits files and tests actions on this PC to build widgets. Admin rights always ask through Windows.",
-                Kit.Segmented([("auto", "Work freely"), ("ask", "Ask first")], S.Ai.Permission, id => { S.Ai.Permission = id; Save(); }, 230)),
             Kit.Row("timer", "Reply timeout", "How long to wait for one answer before giving up.",
                 Kit.Select([("60", "1 minute"), ("120", "2 minutes"), ("240", "4 minutes"), ("480", "8 minutes"), ("900", "15 minutes")],
                     S.Ai.TimeoutSeconds.ToString(), id => { S.Ai.TimeoutSeconds = int.Parse(id); Save(); }, 150)));

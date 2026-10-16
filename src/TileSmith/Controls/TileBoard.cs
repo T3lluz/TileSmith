@@ -5,7 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
-using TileSmith.Core.Widgets;
+using TileSmith.Core.Tiles;
 using TileSmith.Theme;
 using Windows.Foundation;
 
@@ -16,18 +16,29 @@ namespace TileSmith.Controls;
 /// like an Android home screen. Width 4 means "full width" whatever the column count. A tile whose content
 /// needs more height than its cells gets more rows, so nothing is ever clipped.
 /// </summary>
+/// <summary>A footprint in panel cells (4 wide = the full width).</summary>
+public readonly record struct CellSize(int W, int H)
+{
+    public static CellSize Of(TileSize size) => new(size.Cols, size.Rows);
+}
+
 public sealed class BoardPanel : Panel
 {
+    public const int MaxRows = 3;
+
+    /// <summary>Grid rows needed for a height in pixels.</summary>
+    public static int RowsFor(double height) => Math.Max(1, (int)Math.Ceiling((height + TileLayout.CellGap - 0.5) / (TileLayout.CellHeight + TileLayout.CellGap)));
+
     public static readonly DependencyProperty CellsProperty =
         DependencyProperty.RegisterAttached("Cells", typeof(object), typeof(BoardPanel), new PropertyMetadata(new CellSize(2, 1)));
 
-    public static CellSize GetCells(UIElement e) => e is WidgetTile t ? t.Cells : (CellSize)e.GetValue(CellsProperty);
+    public static CellSize GetCells(UIElement e) => e is DesignTile t ? CellSize.Of(t.Size) : (CellSize)e.GetValue(CellsProperty);
     public static void SetCells(UIElement e, CellSize value) => e.SetValue(CellsProperty, value);
 
     public int Columns { get; set; } = 4;
     public double CellWidth { get; set; } = TileLayout.CellWidth;
     public double CellHeight { get; set; } = TileLayout.CellHeight;
-    public double Gap { get; set; } = TileLayout.Gap;
+    public double Gap { get; set; } = TileLayout.CellGap;
 
     /// <summary>Packing order (children order is left alone so dragging never re-parents).</summary>
     public List<UIElement> Order { get; } = [];
@@ -46,7 +57,7 @@ public sealed class BoardPanel : Panel
 
     public double BoardWidth => Columns * CellWidth + (Columns - 1) * Gap;
 
-    public CellSize Clamp(CellSize size) => new(size.W >= 4 ? Columns : Math.Min(size.W, Columns), Math.Clamp(size.H, 1, WidgetSize.MaxHeight));
+    public CellSize Clamp(CellSize size) => new(size.W >= 4 ? Columns : Math.Min(size.W, Columns), Math.Clamp(size.H, 1, MaxRows));
 
     private double Pack(Dictionary<UIElement, Rect> slots, Dictionary<UIElement, CellSize> sizes)
     {
@@ -99,9 +110,10 @@ public sealed class BoardPanel : Panel
         {
             var size = Clamp(GetCells(child));
             var width = size.W * CellWidth + (size.W - 1) * Gap;
+            if (child is DesignTile tile) tile.SlotWidth = width;
             child.Measure(new Size(width, double.PositiveInfinity));
-            var needed = TileLayout.RowsFor(child.DesiredSize.Height);
-            if (needed > size.H) size = size with { H = Math.Min(needed, WidgetSize.MaxHeight + 1) };
+            var needed = RowsFor(child.DesiredSize.Height);
+            if (needed > size.H) size = size with { H = Math.Min(needed, MaxRows + 1) };
             sizes[child] = size;
         }
 
@@ -159,16 +171,16 @@ public sealed class TileBoard : Grid
     private readonly Pressable _addTile;
     private readonly Rectangle _placeholder;
 
-    private WidgetTile? _pressTile;
+    private DesignTile? _pressTile;
     private Point _pressPoint;
     private Pointer? _pointer;
-    private WidgetTile? _dragTile;
+    private DesignTile? _dragTile;
     private Point _grab;
     private Point _lastPoint;
     private Point _lastViewportPoint;
     private bool _movedSinceLift;
-    private WidgetTile? _resizeTile;
-    private CellSize _resizeStart;
+    private DesignTile? _resizeTile;
+    private TileSize _resizeStart = TileSize.Small;
     private Point _resizeOrigin;
     private bool _editMode;
 
@@ -191,8 +203,8 @@ public sealed class TileBoard : Grid
 
         _placeholder = new Rectangle
         {
-            RadiusX = WidgetTile.Radius,
-            RadiusY = WidgetTile.Radius,
+            RadiusX = DesignTile.Radius,
+            RadiusY = DesignTile.Radius,
             Stroke = p.Brush(Palette.WithAlpha(p.Accent, 0.7)),
             StrokeThickness = 1.5,
             StrokeDashArray = [5, 4],
@@ -205,7 +217,7 @@ public sealed class TileBoard : Grid
     }
 
     public event Action<IReadOnlyList<string>>? OrderChanged;
-    public event Action<WidgetTile, CellSize>? Resized;
+    public event Action<DesignTile, TileSize>? Resized;
     public event Action? AddRequested;
 
     /// <summary>A drag or resize just finished (the panel may resize now).</summary>
@@ -227,7 +239,7 @@ public sealed class TileBoard : Grid
     public double Gap => _panel.Gap;
     public double BoardWidth => _panel.BoardWidth;
 
-    public IEnumerable<WidgetTile> Tiles => _panel.Order.OfType<WidgetTile>();
+    public IEnumerable<DesignTile> Tiles => _panel.Order.OfType<DesignTile>();
 
     public bool IsEditMode
     {
@@ -244,7 +256,7 @@ public sealed class TileBoard : Grid
     }
 
     /// <summary>Replaces all tiles (keeps the ghost / add tile at the end).</summary>
-    public void Load(IEnumerable<WidgetTile> tiles)
+    public void Load(IEnumerable<DesignTile> tiles)
     {
         _panel.Children.Clear();
         _panel.Order.Clear();
@@ -254,7 +266,7 @@ public sealed class TileBoard : Grid
         _panel.Order.Add(_addTile);
     }
 
-    private void AddTileCore(WidgetTile tile)
+    private void AddTileCore(DesignTile tile)
     {
         tile.IsEditMode = _editMode;
         tile.AddHandler(PointerPressedEvent, new PointerEventHandler(OnTilePressed), handledEventsToo: true);
@@ -266,13 +278,13 @@ public sealed class TileBoard : Grid
     private Pressable BuildAddTile()
     {
         var p = Palette.Current;
-        var tile = new Pressable { CornerRadius = new CornerRadius(WidgetTile.Radius), Visibility = Visibility.Collapsed, AccessibleName = "Add a widget" };
+        var tile = new Pressable { CornerRadius = new CornerRadius(DesignTile.Radius), Visibility = Visibility.Collapsed, AccessibleName = "Add a widget" };
         BoardPanel.SetCells(tile, new CellSize(2, 1));
         var content = new Grid();
         content.Children.Add(new Rectangle
         {
-            RadiusX = WidgetTile.Radius,
-            RadiusY = WidgetTile.Radius,
+            RadiusX = DesignTile.Radius,
+            RadiusY = DesignTile.Radius,
             Stroke = p.Brush(p.HairlineStrong),
             StrokeThickness = 1.5,
             StrokeDashArray = [4, 3],
@@ -292,7 +304,7 @@ public sealed class TileBoard : Grid
 
     private void OnTilePressed(object sender, PointerRoutedEventArgs e)
     {
-        if (sender is not WidgetTile tile || _dragTile is not null || _resizeTile is not null) return;
+        if (sender is not DesignTile tile || _dragTile is not null || _resizeTile is not null) return;
         var point = e.GetCurrentPoint(this);
         if (e.Pointer.PointerDeviceType == PointerDeviceType.Mouse && !point.Properties.IsLeftButtonPressed) return;
         // holding a slider means adjusting it, never lifting the tile (move slider tiles in edit mode)
@@ -304,7 +316,7 @@ public sealed class TileBoard : Grid
         _holdTimer.Start();
     }
 
-    private void Lift(WidgetTile tile, Point at)
+    private void Lift(DesignTile tile, Point at)
     {
         _holdTimer.Stop();
         if (!_panel.Slots.TryGetValue(tile, out var slot)) return;
@@ -354,7 +366,7 @@ public sealed class TileBoard : Grid
     {
         if (_dragTile is null) return;
         var target = _panel.ItemAt(point, _dragTile);
-        if (target is not WidgetTile targetTile) return;
+        if (target is not DesignTile targetTile) return;
         var from = _panel.Order.IndexOf(_dragTile);
         var to = _panel.Order.IndexOf(targetTile);
         if (from < 0 || to < 0 || from == to) return;
@@ -423,7 +435,7 @@ public sealed class TileBoard : Grid
             tile.Scale = Vector3.One;
             tile.Opacity = 1;
             Canvas.SetZIndex(tile, 0);
-            if (commit && _movedSinceLift) OrderChanged?.Invoke(Tiles.Select(t => t.Widget.Id).ToList());
+            if (commit && _movedSinceLift) OrderChanged?.Invoke(Tiles.Select(t => t.Design.Id).ToList());
             _panel.InvalidateMeasure();
         }
         if (wasGesture && _editMode && _resizeTile is null)
@@ -439,18 +451,16 @@ public sealed class TileBoard : Grid
             {
                 // cancelled: nothing to save
             }
-            else if (resized.Cells != _resizeStart)
+            else if (resized.Size != _resizeStart)
             {
-                Resized?.Invoke(resized, resized.Cells);
+                Resized?.Invoke(resized, resized.Size);
             }
             else
             {
-                // a tap on the handle cycles through the sizes that fit
-                var min = WidgetSize.Minimum(resized.Widget);
-                CellSize[] cycle = [new(1, 1), new(2, 1), new(4, 1), new(2, 2), new(4, 2), new(4, 3)];
-                var fits = cycle.Where(s => s.W >= min.W && s.H >= min.H).ToList();
-                var next = fits[(fits.IndexOf(_resizeStart) + 1) % fits.Count];
-                resized.Cells = next;
+                // a tap on the handle moves on to the next size
+                var all = TileSize.All;
+                var next = all[(all.ToList().IndexOf(_resizeStart) + 1) % all.Count];
+                resized.Size = next;
                 _panel.InvalidateMeasure();
                 Resized?.Invoke(resized, next);
             }
@@ -461,12 +471,12 @@ public sealed class TileBoard : Grid
 
     // ── Drag to resize ──────────────────────────────────────────────────────────────
 
-    private void OnResizePressed(WidgetTile tile, PointerRoutedEventArgs e)
+    private void OnResizePressed(DesignTile tile, PointerRoutedEventArgs e)
     {
         _holdTimer.Stop();
         _pressTile = null;
         _resizeTile = tile;
-        _resizeStart = tile.Cells;
+        _resizeStart = tile.Size;
         _resizeOrigin = e.GetCurrentPoint(this).Position;
         _pointer = e.Pointer;
         CapturePointer(e.Pointer);
@@ -476,18 +486,17 @@ public sealed class TileBoard : Grid
     private void ResizeTo(Point point)
     {
         if (_resizeTile is null) return;
-        var start = _panel.Clamp(_resizeStart);
+        var start = _panel.Clamp(CellSize.Of(_resizeStart));
         var startW = start.W * _panel.CellWidth + (start.W - 1) * _panel.Gap;
         var startH = start.H * _panel.CellHeight + (start.H - 1) * _panel.Gap;
         var w = (int)Math.Round((startW + point.X - _resizeOrigin.X + _panel.Gap) / (_panel.CellWidth + _panel.Gap));
         var h = (int)Math.Round((startH + point.Y - _resizeOrigin.Y + _panel.Gap) / (_panel.CellHeight + _panel.Gap));
-        var min = WidgetSize.Minimum(_resizeTile.Widget);
-        w = Math.Clamp(w, min.W, _panel.Columns);
-        h = Math.Clamp(h, min.H, WidgetSize.MaxHeight);
-        if (w == 3 && _panel.Columns == 4) w = 4; // widths are 1, 2 or full
-        var size = new CellSize(w >= _panel.Columns ? 4 : w, h);
-        if (size == _resizeTile.Cells) return;
-        _resizeTile.Cells = size;
+        w = Math.Clamp(w, 1, _panel.Columns);
+        h = Math.Clamp(h, 1, BoardPanel.MaxRows);
+        if (w == 3) w = 4; // widths are 1, 2 or full
+        var size = TileSize.ForCells(w >= _panel.Columns ? 4 : w, h);
+        if (size == _resizeTile.Size) return;
+        _resizeTile.Size = size;
         _panel.InvalidateMeasure();
     }
 

@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Reflection;
 
-namespace TileSmith.Core.Widgets;
+namespace TileSmith.Core.Tiles;
 
 /// <summary>
 /// Material Symbols (Rounded, filled) — the icon set Android uses. Widgets name icons in snake_case

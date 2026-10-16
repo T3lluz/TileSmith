@@ -14,7 +14,7 @@ public sealed class AiLoginRequiredException(LocalCli cli, string message) : Exc
 /// Uses the official Claude Code / Cursor Agent CLIs installed on this PC, signed in with the user's own
 /// subscription. TileSmith never handles those credentials: the CLIs do their own OAuth sign-in.
 /// The prompt goes through stdin (no command-line length limits) and the CLI's own tools are disabled —
-/// TileSmith's agent loop provides the tools.
+/// TileSmith only needs text back.
 /// </summary>
 public sealed record CliAccount(bool Installed, bool SignedIn, string Summary);
 
